@@ -1,8 +1,25 @@
-# MMLU Benchmark with Braintrust
+# LabAI - LLM Benchmark Platform
+
+**Universidad Austral** | AI Department
 
 Evaluates LLMs on the [MMLU dataset](https://huggingface.co/datasets/cais/mmlu) (57 subjects, ~14k questions).
 
 Each answer is scored by an **LLM-as-judge** (correctness + reasoning quality), results are logged to [Braintrust](https://www.braintrust.dev), and a **PDF report** is generated at the end.
+
+---
+
+## Architecture
+
+```
+Level 1 - Orchestrator Agent (agent_benchmark.py)
+  Claude receives a natural language instruction and autonomously
+  decides which models/subjects/samples to run, interprets results,
+  and calls the benchmark tools.
+
+Level 2 - Direct Benchmark Script (mmlu_benchmark.py)
+  Deterministic script: fixed models, fixed dataset, fixed samples.
+  Used directly via CLI or called by the Level 1 agent.
+```
 
 ---
 
@@ -21,7 +38,49 @@ OPENROUTER_API_KEY=sk-or-v1-...
 
 ---
 
-## How it works
+## Level 1 - Orchestrator Agent
+
+Claude acts as an orchestrator: receives a natural language instruction and autonomously runs benchmarks, interprets results, and generates the report.
+
+### Quick start
+```bash
+# Default instruction: benchmark 4 models, 50 questions each, generate report
+python agent_benchmark.py
+
+# Custom instruction
+python agent_benchmark.py --instruction "Compare gpt-4o and deepseek-v3 on math and physics, 100 questions each. Identify the weakest subject for each model."
+
+# Change orchestrator model
+python agent_benchmark.py --orchestrator claude-opus
+python agent_benchmark.py --orchestrator gpt-4o
+```
+
+### Available orchestrators
+| Key | Model |
+|-----|-------|
+| `claude-haiku` | claude-3.5-haiku (fast, cheap) |
+| `claude-sonnet` | claude-sonnet-4-5 (default, balanced) |
+| `claude-opus` | claude-opus-4-5 (most capable) |
+| `gpt-4o-mini` | gpt-4o-mini (cheap) |
+| `gpt-4o` | gpt-4o |
+
+### What the agent can do (tools)
+| Tool | Description |
+|------|-------------|
+| `run_benchmark` | Run MMLU eval on a model (model, subjects, samples) |
+| `get_results` | Get all results so far, ranked by judge score |
+| `get_subject_breakdown` | Top 5 / bottom 5 subjects for a model |
+| `generate_report` | Save PDF report with all results |
+| `list_available_models` | Show all 16 available models |
+| `list_available_subjects` | Show all 57 MMLU subjects |
+
+---
+
+## Level 2 - Direct Benchmark Script
+
+Fixed script for deterministic runs. Also used internally by the agent.
+
+### How it works
 
 1. Questions are loaded from MMLU and sent to each model
 2. Each model is asked to **explain its reasoning** and then give its final answer (`ANSWER: X`)
