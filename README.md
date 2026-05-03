@@ -11,14 +11,14 @@ Each answer is scored by an **LLM-as-judge** (correctness + reasoning quality), 
 ## Architecture
 
 ```
-Level 1 - Orchestrator Agent (agent_benchmark.py)
+Level 1 - Direct Benchmark Script (mmlu_benchmark.py)
+  Deterministic script: fixed models, fixed dataset, fixed samples.
+  The simplest entry point — run via CLI with no agent logic.
+
+Level 2 - Orchestrator Agent (agent_benchmark.py)
   Claude receives a natural language instruction and autonomously
   decides which models/subjects/samples to run, interprets results,
   and calls the benchmark tools.
-
-Level 2 - Direct Benchmark Script (mmlu_benchmark.py)
-  Deterministic script: fixed models, fixed dataset, fixed samples.
-  Used directly via CLI or called by the Level 1 agent.
 
 Level 3 - Extensible Agent Evaluation Framework (eval_agents.py + labai/)
   Evaluates tool-calling agents on domain-specific datasets (finance, MMLU).
@@ -66,7 +66,7 @@ OPENROUTER_API_KEY=sk-or-v1-...
 
 ---
 
-## Level 1 - Orchestrator Agent
+## Level 2 - Orchestrator Agent
 
 Claude acts as an orchestrator: receives a natural language instruction and autonomously runs benchmarks, interprets results, and generates the report.
 
@@ -104,9 +104,9 @@ python agent_benchmark.py --orchestrator gpt-4o
 
 ---
 
-## Level 2 - Direct Benchmark Script
+## Level 1 - Direct Benchmark Script
 
-Fixed script for deterministic runs. Also used internally by the agent.
+Fixed script for deterministic runs. The simplest entry point. Also called internally by the Level 2 agent.
 
 ### How it works
 

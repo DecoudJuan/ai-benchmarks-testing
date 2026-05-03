@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-LabAI - Level 1: Orchestrator Agent
+LabAI - Level 2: Orchestrator Agent
 
 An AI agent (Claude via OpenRouter) that receives a natural language instruction
 and autonomously decides which models to benchmark, on which subjects,
@@ -243,7 +243,7 @@ async def run_agent(instruction: str, orchestrator_key: str):
     session  = {"results": {}, "run_id": run_id}
 
     print("\n" + "=" * 65)
-    print("  LabAI - Orchestrator Agent (Level 1)")
+    print("  LabAI - Orchestrator Agent (Level 2)")
     print(f"  Run ID      : {run_id}")
     print(f"  Orchestrator: {orchestrator_key} ({model_id})")
     print(f"  Date        : {datetime.now().strftime('%Y-%m-%d %H:%M')}")
@@ -336,7 +336,7 @@ async def run_agent(instruction: str, orchestrator_key: str):
 
 def parse_args():
     p = argparse.ArgumentParser(
-        description="LabAI Orchestrator Agent - Level 1",
+        description="LabAI Orchestrator Agent - Level 2",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )

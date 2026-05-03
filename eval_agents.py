@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-LabAI - Level 2: Agent Evaluation Framework
+LabAI - Level 3: Agent Evaluation Framework
 
 Evaluates one or more LLM agents against a dataset using an LLM-as-judge scorer.
 Results are logged to Braintrust and saved as a PDF report.
@@ -125,7 +125,7 @@ async def run_eval(
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description = "LabAI Level 2 - Agent Evaluation Framework",
+        description = "LabAI Level 3 - Agent Evaluation Framework",
         formatter_class = argparse.RawDescriptionHelpFormatter,
         epilog = __doc__,
     )
