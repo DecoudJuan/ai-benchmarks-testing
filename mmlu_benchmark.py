@@ -35,21 +35,24 @@ litellm.suppress_debug_info = True
 
 # ── Model registry ─────────────────────────────────────────────────────────────
 MODELS: dict[str, str] = {
-    # Anthropic (direct)
-    "claude-haiku":       "anthropic/claude-3-5-haiku-20241022",
-    "claude-sonnet":      "anthropic/claude-3-5-sonnet-20241022",
-    "claude-opus":        "anthropic/claude-3-opus-20240229",
+    # Anthropic via OpenRouter
+    "claude-haiku":       "openrouter/anthropic/claude-3.5-haiku",
+    "claude-sonnet":      "openrouter/anthropic/claude-sonnet-4-5",
+    "claude-opus":        "openrouter/anthropic/claude-opus-4-5",
     # OpenAI (direct)
     "gpt-4o-mini":        "openai/gpt-4o-mini",
     "gpt-4o":             "openai/gpt-4o",
-    # OpenRouter — open-source models
-    "llama-3.1-8b":       "openrouter/meta-llama/llama-3.1-8b-instruct:free",
+    # OpenRouter — Meta Llama
+    "llama-3.1-8b":       "openrouter/meta-llama/llama-3.1-8b-instruct",
     "llama-3.1-70b":      "openrouter/meta-llama/llama-3.1-70b-instruct",
     "llama-3.3-70b":      "openrouter/meta-llama/llama-3.3-70b-instruct",
+    # OpenRouter — Google
     "gemini-flash":       "openrouter/google/gemini-2.0-flash-001",
-    "gemini-pro":         "openrouter/google/gemini-pro-1.5",
-    "mistral-7b":         "openrouter/mistralai/mistral-7b-instruct",
+    "gemini-pro":         "openrouter/google/gemini-2.5-pro-preview-03-25",
+    # OpenRouter — Mistral
+    "mistral-nemo":       "openrouter/mistralai/mistral-nemo",
     "mixtral-8x7b":       "openrouter/mistralai/mixtral-8x7b-instruct",
+    # OpenRouter — others
     "qwen-2.5-72b":       "openrouter/qwen/qwen-2.5-72b-instruct:nitro",
     "deepseek-r1":        "openrouter/deepseek/deepseek-r1",
     "deepseek-v3":        "openrouter/deepseek/deepseek-chat-v3-0324",
