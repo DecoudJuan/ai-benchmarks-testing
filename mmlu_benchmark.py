@@ -225,10 +225,12 @@ async def run_model(
     result: ModelResult,
 ):
     print(f"Evaluating: {model_key}  ({model_id})")
-    input_to_subject = {d["input"]: d["metadata"]["subject"] for d in data}
+    input_to_subject  = {d["input"]: d["metadata"]["subject"] for d in data}
+    input_to_expected = {d["input"]: d["expected"] for d in data}
 
     async def task(input: str) -> str:
         messages = [{"role": "user", "content": input}]
+        expected = input_to_expected.get(input, "")
         try:
             with braintrust.current_span().start_span(name="llm_call", type="llm") as span:
                 resp = await litellm.acompletion(
@@ -250,9 +252,13 @@ async def run_model(
                 span.log(
                     input=messages,
                     output=raw,
+                    expected=expected,
                     metadata={"model": model_id},
                     metrics={"prompt_tokens": pt, "completion_tokens": ct, "tokens": tt},
                 )
+
+            # Log expected on the parent eval span so Braintrust stores it
+            braintrust.current_span().log(expected=expected)
             return raw
         except Exception as e:
             print(f"  [error] {model_key}: {e}")
