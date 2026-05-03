@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MMLU Benchmark — Braintrust + LLM-as-Judge + PDF Report
+MMLU Benchmark - Braintrust + LLM-as-Judge + PDF Report
 
 Usage:
   python mmlu_benchmark.py                                         # default models, 100 samples
@@ -363,7 +363,7 @@ def generate_pdf(results: list[ModelResult], run_id: str, judge_model: str, n_sa
         pdf.set_text_color(*BLACK)
 
     # ──────────────────────────────────────────────────────────────────────────
-    # PAGE 1 — Title + Executive Summary
+    # PAGE 1 - Title + Executive Summary
     # ──────────────────────────────────────────────────────────────────────────
     pdf.add_page()
 
@@ -387,7 +387,7 @@ def generate_pdf(results: list[ModelResult], run_id: str, judge_model: str, n_sa
     pdf.ln(6)
 
     # Leaderboard table
-    section("Leaderboard — all models")
+    section("Leaderboard - all models")
     cols  = ["#", "Model", "Judge Score", "Accuracy", "Prompt Tok.", "Completion Tok.", "Total Tok."]
     widths = [8, 44, 26, 24, 28, 34, 28]
 
@@ -428,7 +428,7 @@ def generate_pdf(results: list[ModelResult], run_id: str, judge_model: str, n_sa
         pdf.ln()
 
     # ──────────────────────────────────────────────────────────────────────────
-    # PAGES 2+ — Per-model detail
+    # PAGES 2+ - Per-model detail
     # ──────────────────────────────────────────────────────────────────────────
     for rank, r in enumerate(ranked, 1):
         pdf.add_page()
@@ -539,10 +539,10 @@ def generate_pdf(results: list[ModelResult], run_id: str, judge_model: str, n_sa
                     pdf.cell(col_w2, 5, f"  {bs.replace('_',' ').title()}: {bv:.1%}", ln=True)
 
     # ──────────────────────────────────────────────────────────────────────────
-    # LAST PAGE — Score distribution overview
+    # LAST PAGE - Score distribution overview
     # ──────────────────────────────────────────────────────────────────────────
     pdf.add_page()
-    header("Score Distribution — all models at a glance")
+    header("Score Distribution - all models at a glance")
 
     bar_max_w = 130
     for r in ranked:
@@ -615,7 +615,7 @@ async def main():
     run_id = str(uuid.uuid4())[:8]
 
     print("\n" + "=" * 65)
-    print("  MMLU Benchmark — Braintrust + LLM-as-Judge")
+    print("  MMLU Benchmark - Braintrust + LLM-as-Judge")
     print(f"  Run ID  : {run_id}")
     print(f"  Models  : {', '.join(args.models)}")
     print(f"  Judge   : {args.judge}")
