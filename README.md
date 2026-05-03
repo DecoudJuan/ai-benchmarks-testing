@@ -19,6 +19,34 @@ Level 1 - Orchestrator Agent (agent_benchmark.py)
 Level 2 - Direct Benchmark Script (mmlu_benchmark.py)
   Deterministic script: fixed models, fixed dataset, fixed samples.
   Used directly via CLI or called by the Level 1 agent.
+
+Level 3 - Extensible Agent Evaluation Framework (eval_agents.py + labai/)
+  Evaluates tool-calling agents on domain-specific datasets (finance, MMLU).
+  Fully extensible: add new datasets, tools, agents, or scorers by subclassing
+  an ABC and applying a @Registry decorator - no other files need to change.
+```
+
+### labai/ package structure
+
+```
+labai/
+  core/
+    types.py       # EvalItem, AgentResult, EvalScore, RunResult — shared types
+    base.py        # BaseDataset, BaseTool, BaseAgent, BaseScorer — ABCs
+    registry.py    # @Registry.dataset / .tool / .agent / .scorer decorators
+    runner.py      # AgentEvalRunner — orchestrates eval loop + Braintrust logging
+  datasets/
+    finance.py     # FinanceDataset — 20 curated Q&A questions requiring tool use
+    mmlu.py        # MMLUDataset — wraps HuggingFace MMLU for agent evaluation
+  tools/
+    finance.py     # StockPriceTool, FinancialRatiosTool, CalculateReturnTool,
+                   # CompareCompaniesTool (mock data, swap for real APIs)
+  agents/
+    llm_agent.py   # LLMAgent — tool-calling LLM agent via litellm
+  scorers/
+    llm_judge.py   # LLMJudgeScorer — answer + reasoning + efficiency scores
+  reports/
+    pdf.py         # PDF report generator for agent eval runs
 ```
 
 ---
@@ -241,3 +269,133 @@ Edit the `JUDGE_PROMPT` string in `mmlu_benchmark.py` to adjust the rubric.
 | `phi-4` | phi-4 | OpenRouter — Microsoft |
 
 All 16 models verified working. Run `python test_models.py` to re-check availability.
+
+---
+
+## Level 3 - Extensible Agent Evaluation Framework
+
+Evaluates tool-calling agents on domain-specific datasets with an LLM-as-judge.
+
+### Quick start
+
+```bash
+# Default: evaluate gpt-4o-mini and claude-haiku on 20 finance questions
+python eval_agents.py
+
+# Evaluate multiple models
+python eval_agents.py --models gpt-4o-mini claude-haiku deepseek-v3
+
+# Filter by category and increase sample count
+python eval_agents.py --models gpt-4o --categories valuation returns --samples 10
+
+# Use MMLU dataset instead of finance
+python eval_agents.py --dataset mmlu --samples 50
+
+# Skip Braintrust logging (useful for testing)
+python eval_agents.py --no-braintrust
+
+# List all registered components and available models
+python eval_agents.py --list
+```
+
+### Scores
+
+Each response is scored on three dimensions:
+
+| Score | Weight | Description |
+|-------|--------|-------------|
+| `answer_score` | 60% | Correctness of the final answer (LLM judge, 0.0-1.0) |
+| `reasoning_score` | 30% | Quality of reasoning / chain-of-thought (LLM judge, 0.0-1.0) |
+| `efficiency_score` | 10% | Tool-use efficiency — fewer calls = better (automatic) |
+
+The weighted `overall` score is logged to Braintrust and shown in the PDF report.
+
+### Extend the framework
+
+The entire framework is plugin-based. Add a new component without touching existing files:
+
+#### Add a new dataset
+
+```python
+# labai/datasets/medical.py
+from labai.core.base import BaseDataset
+from labai.core.registry import Registry
+from labai.core.types import EvalItem
+
+@Registry.dataset("medical_qa")
+class MedicalDataset(BaseDataset):
+    name     = "medical_qa"
+    domain   = "medical"
+    language = "en"
+
+    def load(self, subjects=None, n_samples=None) -> list[EvalItem]:
+        # Load your questions here
+        ...
+```
+
+#### Add a new tool
+
+```python
+# labai/tools/medical.py
+from labai.core.base import BaseTool
+from labai.core.registry import Registry
+
+@Registry.tool("drug_interaction_check")
+class DrugInteractionTool(BaseTool):
+    name        = "drug_interaction_check"
+    description = "Check for known interactions between two drugs."
+
+    def get_schema(self) -> dict:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "drug_a": {"type": "string"},
+                        "drug_b": {"type": "string"},
+                    },
+                    "required": ["drug_a", "drug_b"],
+                },
+            },
+        }
+
+    async def execute(self, drug_a: str, drug_b: str, **_) -> str:
+        # Call real API here
+        return f"No known interaction between {drug_a} and {drug_b}."
+```
+
+#### Add a new agent architecture
+
+```python
+# labai/agents/rag_agent.py
+from labai.core.base import BaseAgent
+from labai.core.registry import Registry
+
+@Registry.agent("rag_agent")
+class RAGAgent(BaseAgent):
+    name     = "rag-agent"
+    model_id = "openai/gpt-4o"
+
+    @property
+    def tools(self): return []
+
+    async def run(self, task: str) -> AgentResult:
+        # Implement RAG pipeline here
+        ...
+```
+
+Just import your new module before calling `AgentEvalRunner` (or add the import to `eval_agents.py`) and the registry picks it up automatically.
+
+### PDF Report (Level 3)
+
+After every run a PDF is saved to `reports/agent_eval_<model>_<run_id>.pdf` with:
+
+| Section | Content |
+|---------|---------|
+| **Page 1** | Run summary — agent, dataset, aggregate scores, token usage, error rate |
+| **Page 2** | Scores by category and difficulty |
+| **Page 3+** | Per-item detail table (id, answer, overall score, tool calls, error flag) |
+| **Last** | Horizontal bar chart comparing scores by category |
