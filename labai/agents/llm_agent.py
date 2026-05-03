@@ -17,6 +17,7 @@ Usage:
         name="finance-agent-gpt4o",
         model_id="openai/gpt-4o",
         tools=[StockPriceTool(), FinancialRatiosTool()],
+        verbose=True,
     )
     result = await agent.run("What is Apple's P/E ratio?")
 """
@@ -44,6 +45,14 @@ DEFAULT_SYSTEM_PROMPT = (
     "Explain your reasoning before giving the final answer."
 )
 
+# ANSI colour helpers (degrade gracefully on terminals that don't support them)
+_CYAN   = "\033[96m"
+_GREEN  = "\033[92m"
+_YELLOW = "\033[93m"
+_GREY   = "\033[90m"
+_RESET  = "\033[0m"
+_BOLD   = "\033[1m"
+
 
 @Registry.agent("llm_agent")
 class LLMAgent(BaseAgent):
@@ -58,6 +67,7 @@ class LLMAgent(BaseAgent):
         max_iterations: Max tool-call rounds before forcing a final answer (default: 8).
         temperature:    Sampling temperature (default: 0 for determinism).
         max_tokens:     Max tokens for each LLM call (default: 1024).
+        verbose:        Print each tool call + result in real time (default: False).
     """
 
     def __init__(
@@ -65,10 +75,11 @@ class LLMAgent(BaseAgent):
         name:           str,
         model_id:       str,
         tools:          list[BaseTool],
-        system_prompt:  str  = DEFAULT_SYSTEM_PROMPT,
-        max_iterations: int  = 8,
+        system_prompt:  str   = DEFAULT_SYSTEM_PROMPT,
+        max_iterations: int   = 8,
         temperature:    float = 0.0,
-        max_tokens:     int  = 1024,
+        max_tokens:     int   = 1024,
+        verbose:        bool  = False,
     ) -> None:
         self.name           = name
         self.model_id       = model_id
@@ -77,6 +88,7 @@ class LLMAgent(BaseAgent):
         self.max_iterations = max_iterations
         self.temperature    = temperature
         self.max_tokens     = max_tokens
+        self.verbose        = verbose
 
         # Build tool map for fast dispatch
         self._tool_map: dict[str, BaseTool] = {t.name: t for t in tools}
@@ -87,9 +99,13 @@ class LLMAgent(BaseAgent):
     def tools(self) -> list[BaseTool]:
         return self._tools
 
-    async def run(self, task: str) -> AgentResult:
+    async def run(self, task: str, item_label: str = "") -> AgentResult:
         """
         Run the agent on a single task string.
+
+        Args:
+            task:       Natural language task.
+            item_label: Optional label printed in verbose output (e.g. item ID).
 
         Returns AgentResult with final answer, all tool calls, tokens, and latency.
         """
@@ -105,6 +121,7 @@ class LLMAgent(BaseAgent):
         prompt_tokens     = 0
         completion_tokens = 0
         final_output      = ""
+        call_index        = 0  # sequential counter for verbose display
 
         for iteration in range(self.max_iterations):
             try:
@@ -118,6 +135,8 @@ class LLMAgent(BaseAgent):
                 )
             except Exception as exc:
                 latency_ms = (time.monotonic() - t_start) * 1_000
+                if self.verbose:
+                    print(f"      {_YELLOW}[error]{_RESET} {exc}")
                 return AgentResult(
                     output            = "",
                     tool_calls        = all_tool_calls,
@@ -134,9 +153,9 @@ class LLMAgent(BaseAgent):
                 prompt_tokens     += getattr(usage, "prompt_tokens",     0) or 0
                 completion_tokens += getattr(usage, "completion_tokens", 0) or 0
 
-            choice     = response.choices[0]
-            msg        = choice.message
-            finish     = choice.finish_reason
+            choice = response.choices[0]
+            msg    = choice.message
+            finish = choice.finish_reason
 
             # Final text answer
             if finish in ("stop", "end_turn") or not getattr(msg, "tool_calls", None):
@@ -162,17 +181,38 @@ class LLMAgent(BaseAgent):
                     ],
                 })
 
-                # Execute tools concurrently
-                tool_results = await asyncio.gather(
-                    *[self._execute_tool(tc) for tc in msg.tool_calls],
-                    return_exceptions=True,
-                )
-
-                for tc_raw, tc_result in zip(msg.tool_calls, tool_results):
-                    output_str = (
-                        tc_result if isinstance(tc_result, str)
-                        else f"Error: {tc_result}"
+                # Execute tools — sequentially when verbose (cleaner output),
+                # concurrently when not verbose (faster)
+                if self.verbose:
+                    tool_results = []
+                    for tc in msg.tool_calls:
+                        call_index += 1
+                        args_str = _fmt_args(tc.function.arguments)
+                        print(
+                            f"      {_CYAN}[{call_index}] --> "
+                            f"{_BOLD}{tc.function.name}{_RESET}"
+                            f"{_CYAN}({args_str}){_RESET}"
+                        )
+                        t_tool = time.monotonic()
+                        result = await self._execute_tool(tc)
+                        elapsed = (time.monotonic() - t_tool) * 1_000
+                        preview = result.replace("\n", " | ")[:120]
+                        print(
+                            f"           {_GREEN}<-- {preview}{_RESET} "
+                            f"{_GREY}[{elapsed:.0f}ms]{_RESET}"
+                        )
+                        tool_results.append(result)
+                else:
+                    raw_results = await asyncio.gather(
+                        *[self._execute_tool(tc) for tc in msg.tool_calls],
+                        return_exceptions=True,
                     )
+                    tool_results = [
+                        r if isinstance(r, str) else f"Error: {r}"
+                        for r in raw_results
+                    ]
+
+                for tc_raw, output_str in zip(msg.tool_calls, tool_results):
                     all_tool_calls.append(
                         ToolCall(
                             name      = tc_raw.function.name,
@@ -228,14 +268,26 @@ class LLMAgent(BaseAgent):
         except json.JSONDecodeError:
             fn_args = {}
 
-        t0   = time.monotonic()
         tool = self._tool_map.get(fn_name)
         if not tool:
             return f"Error: tool '{fn_name}' not found."
 
         try:
-            result     = await tool.execute(**fn_args)
-            elapsed_ms = (time.monotonic() - t0) * 1_000
-            return result
+            return await tool.execute(**fn_args)
         except Exception as exc:
             return f"Error executing '{fn_name}': {exc}"
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _fmt_args(arguments_json: str) -> str:
+    """Format tool arguments compactly for console display."""
+    try:
+        args = json.loads(arguments_json or "{}")
+        parts = []
+        for k, v in args.items():
+            val = json.dumps(v) if isinstance(v, (list, dict)) else repr(v)
+            parts.append(f"{k}={val}")
+        return ", ".join(parts)
+    except Exception:
+        return arguments_json[:80]

@@ -43,7 +43,8 @@ from labai.core.registry import Registry
 from labai.core.runner import AgentEvalRunner
 from labai.core.types import RunResult
 from labai.agents.llm_agent import LLMAgent
-from labai.reports.pdf import generate_agent_eval_pdf
+from labai.reports.pdf  import generate_agent_eval_pdf
+from labai.reports.html import generate_agent_eval_html
 from labai.tools.finance import (
     StockPriceTool,
     FinancialRatiosTool,
@@ -90,12 +91,13 @@ FINANCE_TOOLS = [
 # ── Run a single agent ─────────────────────────────────────────────────────────
 
 async def run_eval(
-    model_key:   str,
-    dataset_key: str,
-    categories:  list[str] | None,
-    n_samples:   int,
-    judge_model: str,
+    model_key:      str,
+    dataset_key:    str,
+    categories:     list[str] | None,
+    n_samples:      int,
+    judge_model:    str,
     log_braintrust: bool,
+    verbose:        bool = False,
 ) -> RunResult:
     model_id = MODELS[model_key]
 
@@ -103,6 +105,7 @@ async def run_eval(
         name     = model_key,
         model_id = model_id,
         tools    = FINANCE_TOOLS,
+        verbose  = verbose,
     )
     dataset = Registry.get_dataset(dataset_key)()
     scorer  = LLMJudgeScorer(judge_model=judge_model)
@@ -166,9 +169,19 @@ def parse_args() -> argparse.Namespace:
         help    = "Disable Braintrust logging",
     )
     p.add_argument(
+        "--verbose", "-v",
+        action  = "store_true",
+        help    = "Print each tool call + result in real time (sequential, clearer output)",
+    )
+    p.add_argument(
         "--no-pdf",
         action  = "store_true",
         help    = "Skip PDF report generation",
+    )
+    p.add_argument(
+        "--no-html",
+        action  = "store_true",
+        help    = "Skip HTML report generation",
     )
     p.add_argument(
         "--list",
@@ -218,11 +231,12 @@ async def main():
 
     log_bt = not args.no_braintrust and bool(os.getenv("BRAINTRUST_API_KEY"))
 
-    print(f"\nLabAI - Agent Evaluation")
+    print(f"\nLabAI - Agent Evaluation (Level 3)")
     print(f"  Dataset   : {args.dataset}")
     print(f"  Models    : {', '.join(args.models)}")
     print(f"  Samples   : {args.samples} per agent")
     print(f"  Judge     : {args.judge}")
+    print(f"  Verbose   : {'yes - tool traces shown' if args.verbose else 'no'}")
     print(f"  Braintrust: {'enabled' if log_bt else 'disabled'}")
     if args.categories:
         print(f"  Categories: {', '.join(args.categories)}")
@@ -240,6 +254,7 @@ async def main():
             n_samples      = args.samples,
             judge_model    = args.judge,
             log_braintrust = log_bt,
+            verbose        = args.verbose,
         )
         results.append(run)
         print(
@@ -250,10 +265,13 @@ async def main():
 
     print_run_summary(results)
 
-    if not args.no_pdf:
-        for run in results:
-            path = generate_agent_eval_pdf(run)
-            print(f"\n  PDF report: {path}")
+    for run in results:
+        if not args.no_html:
+            html_path = generate_agent_eval_html(run)
+            print(f"\n  HTML report: {html_path}")
+        if not args.no_pdf:
+            pdf_path = generate_agent_eval_pdf(run)
+            print(f"  PDF report : {pdf_path}")
 
     if log_bt:
         print(f"\n  Braintrust: https://www.braintrust.dev/app")
