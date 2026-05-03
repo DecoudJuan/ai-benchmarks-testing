@@ -112,9 +112,6 @@ def load_mmlu(subjects: list[str] | None, n_samples: int) -> list[dict]:
             ds = ds.filter(lambda x: x["subject"] in matched)
             print(f"  Subjects: {matched}")
 
-    if n_samples and n_samples < len(ds):
-        ds = ds.select(range(n_samples))
-
     letters = ["A", "B", "C", "D"]
     data = [
         {
@@ -124,7 +121,23 @@ def load_mmlu(subjects: list[str] | None, n_samples: int) -> list[dict]:
         }
         for ex in ds
     ]
-    print(f"  Loaded {len(data)} questions\n")
+
+    # Sample evenly across subjects so every subject is represented
+    if n_samples and n_samples < len(data):
+        from collections import defaultdict
+        import math
+        by_subject: dict[str, list] = defaultdict(list)
+        for item in data:
+            by_subject[item["metadata"]["subject"]].append(item)
+
+        n_subjects = len(by_subject)
+        per_subject = max(1, math.ceil(n_samples / n_subjects))
+        sampled = []
+        for items in by_subject.values():
+            sampled.extend(items[:per_subject])
+        data = sampled[:n_samples]
+
+    print(f"  Loaded {len(data)} questions across {len({d['metadata']['subject'] for d in data})} subjects\n")
     return data
 
 
