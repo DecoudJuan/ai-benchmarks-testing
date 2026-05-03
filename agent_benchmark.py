@@ -324,11 +324,19 @@ async def run_agent(instruction: str, orchestrator_key: str):
         print(f"[agent] stopped: {finish}")
         break
 
-    # Final summary
+    # Final summary + guaranteed report
     if session["results"]:
         print_summary(list(session["results"].values()))
 
-    print(f"\nBraintrust: https://www.braintrust.dev/app")
+        # Always generate PDF, regardless of whether the agent called generate_report
+        max_q = max((len(r.judge_scores) for r in session["results"].values()), default=0)
+        pdf_path = generate_pdf(
+            list(session["results"].values()),
+            session["run_id"],
+            DEFAULT_JUDGE,
+            max_q,
+        )
+        print(f"\n  PDF report: {pdf_path}")
 
 
 # ── CLI ────────────────────────────────────────────────────────────────────────
