@@ -36,7 +36,7 @@ litellm.suppress_debug_info = True
 # ── Model registry ─────────────────────────────────────────────────────────────
 MODELS: dict[str, str] = {
     # Anthropic (direct)
-    "claude-haiku":       "anthropic/claude-3-haiku-20240307",
+    "claude-haiku":       "anthropic/claude-3-5-haiku-20241022",
     "claude-sonnet":      "anthropic/claude-3-5-sonnet-20241022",
     "claude-opus":        "anthropic/claude-3-opus-20240229",
     # OpenAI (direct)
@@ -46,17 +46,17 @@ MODELS: dict[str, str] = {
     "llama-3.1-8b":       "openrouter/meta-llama/llama-3.1-8b-instruct:free",
     "llama-3.1-70b":      "openrouter/meta-llama/llama-3.1-70b-instruct",
     "llama-3.3-70b":      "openrouter/meta-llama/llama-3.3-70b-instruct",
-    "gemini-flash":       "openrouter/google/gemini-flash-1.5",
+    "gemini-flash":       "openrouter/google/gemini-2.0-flash-001",
     "gemini-pro":         "openrouter/google/gemini-pro-1.5",
     "mistral-7b":         "openrouter/mistralai/mistral-7b-instruct",
     "mixtral-8x7b":       "openrouter/mistralai/mixtral-8x7b-instruct",
-    "qwen-2.5-72b":       "openrouter/qwen/qwen-2.5-72b-instruct",
+    "qwen-2.5-72b":       "openrouter/qwen/qwen-2.5-72b-instruct:nitro",
     "deepseek-r1":        "openrouter/deepseek/deepseek-r1",
-    "deepseek-v3":        "openrouter/deepseek/deepseek-chat",
+    "deepseek-v3":        "openrouter/deepseek/deepseek-chat-v3-0324",
     "phi-4":              "openrouter/microsoft/phi-4",
 }
 
-DEFAULT_MODELS = ["gpt-4o-mini", "claude-haiku", "llama-3.1-8b"]
+DEFAULT_MODELS = ["gpt-4o-mini", "claude-haiku", "gemini-flash", "qwen-2.5-72b"]
 
 MMLU_SUBJECTS = [
     "abstract_algebra", "anatomy", "astronomy", "business_ethics",

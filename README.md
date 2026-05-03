@@ -125,16 +125,24 @@ ds = load_dataset("openai/openai_humaneval", split="test")
 
 ## Available models
 
-| Key | Provider |
-|-----|----------|
-| `claude-haiku`, `claude-sonnet`, `claude-opus` | Anthropic (direct) |
-| `gpt-4o-mini`, `gpt-4o` | OpenAI (direct) |
-| `llama-3.1-8b`, `llama-3.1-70b`, `llama-3.3-70b` | OpenRouter — Meta |
-| `gemini-flash`, `gemini-pro` | OpenRouter — Google |
-| `mistral-7b`, `mixtral-8x7b` | OpenRouter — Mistral |
-| `qwen-2.5-72b` | OpenRouter — Alibaba |
-| `deepseek-r1`, `deepseek-v3` | OpenRouter — DeepSeek |
-| `phi-4` | OpenRouter — Microsoft |
+| Key | Model ID | Provider |
+|-----|----------|----------|
+| `claude-haiku` | claude-3-5-haiku-20241022 | Anthropic |
+| `claude-sonnet` | claude-3-5-sonnet-20241022 | Anthropic |
+| `claude-opus` | claude-3-opus-20240229 | Anthropic |
+| `gpt-4o-mini` | gpt-4o-mini | OpenAI |
+| `gpt-4o` | gpt-4o | OpenAI |
+| `llama-3.1-8b` | llama-3.1-8b-instruct:free | OpenRouter — Meta |
+| `llama-3.1-70b` | llama-3.1-70b-instruct | OpenRouter — Meta |
+| `llama-3.3-70b` | llama-3.3-70b-instruct | OpenRouter — Meta |
+| `gemini-flash` | gemini-2.0-flash-001 | OpenRouter — Google |
+| `gemini-pro` | gemini-pro-1.5 | OpenRouter — Google |
+| `mistral-7b` | mistral-7b-instruct | OpenRouter — Mistral |
+| `mixtral-8x7b` | mixtral-8x7b-instruct | OpenRouter — Mistral |
+| `qwen-2.5-72b` | qwen-2.5-72b-instruct:nitro | OpenRouter — Alibaba |
+| `deepseek-r1` | deepseek-r1 | OpenRouter — DeepSeek |
+| `deepseek-v3` | deepseek-chat-v3-0324 | OpenRouter — DeepSeek |
+| `phi-4` | phi-4 | OpenRouter — Microsoft |
 
 ---
 
