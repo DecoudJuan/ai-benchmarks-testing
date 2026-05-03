@@ -252,8 +252,15 @@ async def run_agent(instruction: str, orchestrator_key: str):
     system_msg = (
         "You are LabAI's benchmark orchestrator for Universidad Austral. "
         "Your job is to run MMLU benchmarks on LLMs, analyze results, and generate research reports. "
-        "Use the available tools to complete the objective. "
-        "Think step by step: run benchmarks, check results, investigate findings, generate report."
+        "IMPORTANT: Always follow this exact order:\n"
+        "  1. Call list_available_models to get the exact model keys you can use.\n"
+        "  2. Call list_available_subjects to discover which MMLU subjects exist "
+        "and find the ones relevant to the instruction.\n"
+        "  3. Only then call run_benchmark using the exact model keys and subject names "
+        "returned by those tools — never guess or infer them from the instruction.\n"
+        "  4. After all benchmarks finish, call get_results to review rankings.\n"
+        "  5. Call get_subject_breakdown for any model that needs deeper analysis.\n"
+        "  6. Summarize findings and finish — a PDF report will be generated automatically."
     )
 
     messages = [
