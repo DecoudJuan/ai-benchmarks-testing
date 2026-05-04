@@ -23,6 +23,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 import uuid
 from datetime import datetime
 
@@ -173,8 +174,6 @@ async def handle_tool(name: str, inputs: dict, session: dict) -> str:
         subjects = inputs.get("subjects") or None
         samples  = inputs.get("samples", 50)
 
-        print(f"\n  [tool] run_benchmark: {model_key} | subjects={subjects} | samples={samples}")
-
         data   = load_mmlu(subjects, samples)
         result = ModelResult(model_key=model_key, model_id=MODELS[model_key])
         await run_model(model_key, MODELS[model_key], data, DEFAULT_JUDGE, result)
@@ -252,15 +251,12 @@ async def run_agent(instruction: str, orchestrator_key: str):
     system_msg = (
         "You are LabAI's benchmark orchestrator for Universidad Austral. "
         "Your job is to run MMLU benchmarks on LLMs, analyze results, and generate research reports. "
-        "IMPORTANT: Always follow this exact order:\n"
-        "  1. Call list_available_models to get the exact model keys you can use.\n"
-        "  2. Call list_available_subjects to discover which MMLU subjects exist "
-        "and find the ones relevant to the instruction.\n"
-        "  3. Only then call run_benchmark using the exact model keys and subject names "
-        "returned by those tools — never guess or infer them from the instruction.\n"
-        "  4. After all benchmarks finish, call get_results to review rankings.\n"
-        "  5. Call get_subject_breakdown for any model that needs deeper analysis.\n"
-        "  6. Summarize findings and finish — a PDF report will be generated automatically."
+        "You have tools to list available models and subjects, run benchmarks, inspect results, "
+        "and get per-subject breakdowns. Use them as you see fit to fulfil the instruction. "
+        "When you are unsure about exact model keys or subject names, use "
+        "list_available_models or list_available_subjects first. "
+        "A PDF report is generated automatically when you finish — no need to call generate_report "
+        "unless you want it mid-run."
     )
 
     messages = [
@@ -315,10 +311,17 @@ async def run_agent(instruction: str, orchestrator_key: str):
                 fn_name = tc.function.name
                 fn_args = json.loads(tc.function.arguments or "{}")
 
-                print(f"\n  --> {fn_name}({json.dumps(fn_args, ensure_ascii=False)})")
+                args_display = ", ".join(
+                    f"{k}={json.dumps(v)}" for k, v in fn_args.items()
+                ) if fn_args else ""
+                print(f"\n  \033[96m-->\033[0m \033[1m{fn_name}\033[0m({args_display})")
+
+                _t = time.monotonic()
                 output = await handle_tool(fn_name, fn_args, session)
-                preview = output if len(output) < 300 else output[:300] + "..."
-                print(f"  <-- {preview}")
+                elapsed = (time.monotonic() - _t) * 1000
+
+                preview = output.replace("\n", "  ") if len(output) < 280 else output[:280].replace("\n", "  ") + "..."
+                print(f"  \033[92m<--\033[0m {preview}  \033[90m[{elapsed:.0f}ms]\033[0m")
 
                 messages.append({
                     "role":         "tool",
