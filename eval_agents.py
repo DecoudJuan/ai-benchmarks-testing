@@ -265,11 +265,14 @@ async def main():
 
     print_run_summary(results)
 
-    for run in results:
-        if not args.no_html:
-            html_path = generate_agent_eval_html(run)
-            print(f"\n  HTML report: {html_path}")
-        if not args.no_pdf:
+    # HTML: single file for all models (tabbed if multiple)
+    if not args.no_html:
+        html_path = generate_agent_eval_html(results)
+        print(f"\n  HTML report: {html_path}")
+
+    # PDF: one per model
+    if not args.no_pdf:
+        for run in results:
             pdf_path = generate_agent_eval_pdf(run)
             print(f"  PDF report : {pdf_path}")
 
