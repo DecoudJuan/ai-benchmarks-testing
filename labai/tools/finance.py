@@ -1,12 +1,11 @@
 """
-Finance tools for agent evaluation.
+Finance tools for agent evaluation — backed by Yahoo Finance (yfinance).
 
-These tools simulate real finance data APIs with mock data.
-Replace the mock data dicts with actual API calls (Yahoo Finance, Alpha Vantage,
-Bloomberg, etc.) when moving to production.
+Real-time data: prices fetched live, no API key required.
+Financial ratios come from yfinance .info (TTM / most recent filing).
 
 Registered tools:
-    get_stock_price        — current price + daily change
+    get_stock_price        — live price + daily change
     get_financial_ratios   — P/E, P/B, ROE, debt/equity, dividend yield
     calculate_return       — return calculation given buy price and shares
     compare_companies      — side-by-side price + ratios for multiple tickers
@@ -14,51 +13,97 @@ Registered tools:
 
 from __future__ import annotations
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
+
+import yfinance as yf
 
 from labai.core.base import BaseTool
 from labai.core.registry import Registry
 
-# ── Mock data ──────────────────────────────────────────────────────────────────
-# In production: replace with real API calls.
+_executor = ThreadPoolExecutor(max_workers=6)
 
-_PRICES: dict[str, dict] = {
-    "AAPL":  {"price": 178.72,  "change_pct":  0.83,  "name": "Apple Inc."},
-    "MSFT":  {"price": 378.85,  "change_pct":  1.12,  "name": "Microsoft Corp."},
-    "GOOGL": {"price": 163.45,  "change_pct": -0.34,  "name": "Alphabet Inc."},
-    "AMZN":  {"price": 178.25,  "change_pct":  2.15,  "name": "Amazon.com Inc."},
-    "TSLA":  {"price": 242.10,  "change_pct": -1.87,  "name": "Tesla Inc."},
-    "NVDA":  {"price": 875.40,  "change_pct":  3.21,  "name": "NVIDIA Corp."},
-    "META":  {"price": 473.28,  "change_pct":  0.55,  "name": "Meta Platforms"},
-    "NFLX":  {"price": 608.12,  "change_pct": -0.72,  "name": "Netflix Inc."},
-    "JPM":   {"price": 193.47,  "change_pct":  0.41,  "name": "JPMorgan Chase"},
-    "BRK.B": {"price": 356.20,  "change_pct":  0.18,  "name": "Berkshire Hathaway B"},
-}
 
-_RATIOS: dict[str, dict] = {
-    "AAPL":  {"pe": 28.5,  "pb": 8.9,  "roe": 160.1, "debt_equity": 1.76, "dividend_yield": 0.55},
-    "MSFT":  {"pe": 35.2,  "pb": 12.8, "roe":  43.1, "debt_equity": 0.32, "dividend_yield": 0.73},
-    "GOOGL": {"pe": 25.1,  "pb":  6.4, "roe":  27.3, "debt_equity": 0.07, "dividend_yield": 0.00},
-    "AMZN":  {"pe": 21.3,  "pb":  8.2, "roe":  20.5, "debt_equity": 0.58, "dividend_yield": 0.00},
-    "TSLA":  {"pe": 65.3,  "pb": 12.3, "roe":  19.4, "debt_equity": 0.18, "dividend_yield": 0.00},
-    "NVDA":  {"pe": 72.1,  "pb": 35.6, "roe":  91.5, "debt_equity": 0.41, "dividend_yield": 0.04},
-    "META":  {"pe": 23.4,  "pb": 7.1,  "roe":  36.2, "debt_equity": 0.13, "dividend_yield": 0.43},
-    "NFLX":  {"pe": 44.8,  "pb": 14.2, "roe":  29.3, "debt_equity": 1.45, "dividend_yield": 0.00},
-    "JPM":   {"pe": 11.2,  "pb":  1.9, "roe":  17.1, "debt_equity": 1.23, "dividend_yield": 2.24},
-    "BRK.B": {"pe": 22.1,  "pb":  1.5, "roe":   7.8, "debt_equity": 0.27, "dividend_yield": 0.00},
-}
+def _run_sync(fn):
+    """Run a synchronous yfinance call in a thread to avoid blocking the event loop."""
+    loop = asyncio.get_event_loop()
+    return loop.run_in_executor(_executor, fn)
+
+
+def _fetch_ticker_data(ticker: str) -> dict:
+    """Fetch price history + info for a ticker. Returns combined dict."""
+    t    = yf.Ticker(ticker)
+    info = t.info or {}
+    hist = t.history(period="5d")
+
+    current_price = None
+    prev_close    = None
+
+    if not hist.empty:
+        current_price = float(hist["Close"].iloc[-1])
+        if len(hist) >= 2:
+            prev_close = float(hist["Close"].iloc[-2])
+        else:
+            prev_close = info.get("previousClose") or current_price
+    else:
+        current_price = info.get("currentPrice") or info.get("regularMarketPrice")
+        prev_close    = info.get("previousClose") or current_price
+
+    change_pct = 0.0
+    if current_price and prev_close and prev_close != 0:
+        change_pct = ((current_price - prev_close) / prev_close) * 100
+
+    return {
+        "price":        current_price,
+        "prev_close":   prev_close,
+        "change_pct":   change_pct,
+        "name":         info.get("shortName") or info.get("longName") or ticker,
+        "pe":           info.get("trailingPE"),
+        "forward_pe":   info.get("forwardPE"),
+        "pb":           info.get("priceToBook"),
+        "roe":          (info.get("returnOnEquity") or 0) * 100,
+        "debt_equity":  (info.get("debtToEquity") or 0) / 100,
+        "div_yield":    _calc_div_yield(info, current_price),
+        "market_cap":   info.get("marketCap"),
+        "sector":       info.get("sector", ""),
+        "currency":     info.get("currency", "USD"),
+    }
+
+
+def _calc_div_yield(info: dict, current_price: float | None) -> float:
+    """Calculate dividend yield % reliably from dividendRate/price or dividendYield."""
+    div_rate = info.get("dividendRate") or 0
+    if div_rate and current_price:
+        return (div_rate / current_price) * 100
+    raw = info.get("dividendYield") or info.get("trailingAnnualDividendYield") or 0
+    # yfinance sometimes returns as decimal (0.007), sometimes as pct (0.73)
+    return raw * 100 if raw < 1 else raw
+
+
+def _fmt_price(price, currency="USD") -> str:
+    if price is None:
+        return "N/A"
+    sym = "$" if currency == "USD" else f"{currency} "
+    return f"{sym}{price:,.2f}"
+
+def _fmt_ratio(val, suffix="x", decimals=1) -> str:
+    if val is None or val == 0:
+        return "N/A"
+    return f"{val:.{decimals}f}{suffix}"
 
 
 # ── Tool implementations ───────────────────────────────────────────────────────
 
 @Registry.tool("get_stock_price")
 class StockPriceTool(BaseTool):
-    """Returns the current stock price and daily change for a ticker symbol."""
+    """Returns the live stock price and daily change for any ticker symbol."""
 
     name        = "get_stock_price"
     description = (
-        "Get the current stock price and daily percentage change for a given ticker symbol. "
-        "Supports: AAPL, MSFT, GOOGL, AMZN, TSLA, NVDA, META, NFLX, JPM, BRK.B"
+        "Get the current (live) stock price and daily percentage change for any "
+        "publicly traded ticker symbol (e.g. AAPL, MSFT, GOOGL, TSLA, NVDA, JPM, "
+        "BRK-B, AMZN, META, NFLX, or any other valid ticker)."
     )
 
     def get_schema(self) -> dict:
@@ -72,7 +117,7 @@ class StockPriceTool(BaseTool):
                     "properties": {
                         "ticker": {
                             "type": "string",
-                            "description": "Stock ticker symbol (e.g. 'AAPL', 'MSFT').",
+                            "description": "Stock ticker symbol (e.g. 'AAPL', 'MSFT', 'BRK-B').",
                         },
                     },
                     "required": ["ticker"],
@@ -81,30 +126,40 @@ class StockPriceTool(BaseTool):
         }
 
     async def execute(self, ticker: str, **_: Any) -> str:
-        ticker = ticker.upper().strip()
-        data   = _PRICES.get(ticker)
-        if not data:
-            return (
-                f"Error: ticker '{ticker}' not found. "
-                f"Available: {', '.join(sorted(_PRICES))}"
-            )
+        ticker = ticker.upper().strip().replace(".", "-")
+        try:
+            data = await _run_sync(lambda: _fetch_ticker_data(ticker))
+        except Exception as exc:
+            return f"Error fetching data for '{ticker}': {exc}"
+
+        if data["price"] is None:
+            return f"No price data available for ticker '{ticker}'. Verify the symbol is correct."
+
         direction = "+" if data["change_pct"] >= 0 else ""
+        currency  = data["currency"]
+        cap_str   = ""
+        if data["market_cap"]:
+            cap_b = data["market_cap"] / 1e9
+            cap_str = f"\n  Market cap    : ${cap_b:,.1f}B"
+
         return (
             f"{data['name']} ({ticker})\n"
-            f"  Current price : ${data['price']:.2f}\n"
+            f"  Current price : {_fmt_price(data['price'], currency)}\n"
             f"  Daily change  : {direction}{data['change_pct']:.2f}%"
+            f"{cap_str}"
+            + (f"\n  Sector        : {data['sector']}" if data["sector"] else "")
         )
 
 
 @Registry.tool("get_financial_ratios")
 class FinancialRatiosTool(BaseTool):
-    """Returns key financial ratios (P/E, P/B, ROE, debt/equity, dividend yield)."""
+    """Returns key financial ratios (P/E, P/B, ROE, debt/equity, dividend yield) via Yahoo Finance."""
 
     name        = "get_financial_ratios"
     description = (
-        "Get key financial ratios for a stock: P/E, P/B, ROE (%), debt-to-equity, "
-        "and dividend yield (%). "
-        "Supports: AAPL, MSFT, GOOGL, AMZN, TSLA, NVDA, META, NFLX, JPM, BRK.B"
+        "Get key financial ratios for any publicly traded stock: trailing P/E, forward P/E, "
+        "P/B, ROE (%), debt-to-equity, and dividend yield (%). "
+        "Data sourced live from Yahoo Finance."
     )
 
     def get_schema(self) -> dict:
@@ -127,20 +182,23 @@ class FinancialRatiosTool(BaseTool):
         }
 
     async def execute(self, ticker: str, **_: Any) -> str:
-        ticker = ticker.upper().strip()
-        data   = _RATIOS.get(ticker)
-        if not data:
-            return (
-                f"Error: ticker '{ticker}' not found. "
-                f"Available: {', '.join(sorted(_RATIOS))}"
-            )
+        ticker = ticker.upper().strip().replace(".", "-")
+        try:
+            data = await _run_sync(lambda: _fetch_ticker_data(ticker))
+        except Exception as exc:
+            return f"Error fetching ratios for '{ticker}': {exc}"
+
+        if data["price"] is None:
+            return f"No data available for ticker '{ticker}'. Verify the symbol is correct."
+
         return (
-            f"Financial ratios for {ticker}:\n"
-            f"  P/E ratio        : {data['pe']:.1f}x\n"
-            f"  P/B ratio        : {data['pb']:.1f}x\n"
-            f"  ROE              : {data['roe']:.1f}%\n"
-            f"  Debt / Equity    : {data['debt_equity']:.2f}\n"
-            f"  Dividend yield   : {data['dividend_yield']:.2f}%"
+            f"Financial ratios for {data['name']} ({ticker}):\n"
+            f"  Trailing P/E     : {_fmt_ratio(data['pe'])}\n"
+            f"  Forward P/E      : {_fmt_ratio(data['forward_pe'])}\n"
+            f"  P/B ratio        : {_fmt_ratio(data['pb'])}\n"
+            f"  ROE              : {_fmt_ratio(data['roe'], '%')}\n"
+            f"  Debt / Equity    : {_fmt_ratio(data['debt_equity'], '', 2)}\n"
+            f"  Dividend yield   : {_fmt_ratio(data['div_yield'], '%', 2)}"
         )
 
 
@@ -200,12 +258,12 @@ class CalculateReturnTool(BaseTool):
         pct_return    = (gain / cost) * 100 if cost else 0.0
 
         lines = [
-            f"Investment analysis:",
-            f"  Shares bought   : {shares:.4g}",
-            f"  Cost basis      : ${cost:,.2f}",
-            f"  Current value   : ${current_value:,.2f}",
-            f"  Gain / Loss     : ${gain:+,.2f}",
-            f"  Total return    : {pct_return:+.2f}%",
+            "Investment analysis:",
+            f"  Shares bought    : {shares:.4g}",
+            f"  Cost basis       : ${cost:,.2f}",
+            f"  Current value    : ${current_value:,.2f}",
+            f"  Gain / Loss      : ${gain:+,.2f}",
+            f"  Total return     : {pct_return:+.2f}%",
         ]
 
         if years_held and years_held > 0:
@@ -217,13 +275,12 @@ class CalculateReturnTool(BaseTool):
 
 @Registry.tool("compare_companies")
 class CompareCompaniesTool(BaseTool):
-    """Side-by-side comparison of price and key ratios for multiple tickers."""
+    """Side-by-side comparison of live price and key ratios for multiple tickers."""
 
     name        = "compare_companies"
     description = (
-        "Compare two or more companies side-by-side on current stock price, P/E, P/B, "
-        "ROE, debt-to-equity, and dividend yield. "
-        "Supports: AAPL, MSFT, GOOGL, AMZN, TSLA, NVDA, META, NFLX, JPM, BRK.B"
+        "Compare two or more companies side-by-side on live stock price, P/E, P/B, "
+        "ROE, debt-to-equity, and dividend yield. Works with any valid ticker symbols."
     )
 
     def get_schema(self) -> dict:
@@ -247,23 +304,36 @@ class CompareCompaniesTool(BaseTool):
         }
 
     async def execute(self, tickers: list[str], **_: Any) -> str:
-        results = []
-        for raw in tickers:
-            t = raw.upper().strip()
-            price_data = _PRICES.get(t)
-            ratio_data = _RATIOS.get(t)
-            if not price_data or not ratio_data:
-                results.append(f"  {t}: not found")
+        cleaned = [t.upper().strip().replace(".", "-") for t in tickers]
+
+        # Fetch all tickers concurrently
+        async def fetch_one(ticker: str):
+            try:
+                return ticker, await _run_sync(lambda: _fetch_ticker_data(ticker))
+            except Exception as exc:
+                return ticker, {"error": str(exc)}
+
+        results_raw = await asyncio.gather(*[fetch_one(t) for t in cleaned])
+
+        rows = []
+        for ticker, data in results_raw:
+            if "error" in data:
+                rows.append(f"  {ticker}: error — {data['error']}")
                 continue
-            results.append(
-                f"  {t} ({price_data['name']}):\n"
-                f"    Price     : ${price_data['price']:.2f} "
-                f"({'+' if price_data['change_pct'] >= 0 else ''}{price_data['change_pct']:.2f}%)\n"
-                f"    P/E       : {ratio_data['pe']:.1f}x\n"
-                f"    P/B       : {ratio_data['pb']:.1f}x\n"
-                f"    ROE       : {ratio_data['roe']:.1f}%\n"
-                f"    D/E       : {ratio_data['debt_equity']:.2f}\n"
-                f"    Div. Yield: {ratio_data['dividend_yield']:.2f}%"
+            if data["price"] is None:
+                rows.append(f"  {ticker}: no data available")
+                continue
+
+            direction = "+" if data["change_pct"] >= 0 else ""
+            rows.append(
+                f"  {ticker} ({data['name']}):\n"
+                f"    Price      : {_fmt_price(data['price'], data['currency'])} "
+                f"({direction}{data['change_pct']:.2f}%)\n"
+                f"    P/E (TTM)  : {_fmt_ratio(data['pe'])}\n"
+                f"    P/B        : {_fmt_ratio(data['pb'])}\n"
+                f"    ROE        : {_fmt_ratio(data['roe'], '%')}\n"
+                f"    D/E        : {_fmt_ratio(data['debt_equity'], '', 2)}\n"
+                f"    Div. Yield : {_fmt_ratio(data['div_yield'], '%', 2)}"
             )
 
-        return "Company comparison:\n" + "\n\n".join(results)
+        return "Company comparison (live data):\n\n" + "\n\n".join(rows)

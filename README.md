@@ -1,52 +1,54 @@
-# LabAI - LLM Benchmark Platform
+# LabAI — LLM Benchmark Platform
 
 **Universidad Austral** | AI Department
 
-Evaluates LLMs on the [MMLU dataset](https://huggingface.co/datasets/cais/mmlu) (57 subjects, ~14k questions).
+Open-source LLM evaluation system that benchmarks models in two modes:
 
-Each answer is scored by an **LLM-as-judge** (correctness + reasoning quality), results are logged to [Braintrust](https://www.braintrust.dev), and a **PDF report** is generated at the end.
+1. **MMLU** — pure knowledge across 57 subjects (~14k multiple-choice questions)
+2. **Agent Eval** — agentic reasoning with real finance tools, scored by an LLM-as-judge
+
+Results are logged to [Braintrust](https://www.braintrust.dev) and exported as interactive HTML and clean PDF reports.
 
 ---
 
 ## Architecture
 
 ```
-Level 1 - Direct Benchmark Script (mmlu_benchmark.py)
-  Deterministic script: fixed models, fixed dataset, fixed samples.
-  The simplest entry point — run via CLI with no agent logic.
+Level 1 — Direct Benchmark (mmlu_benchmark.py)
+  Fixed models, fixed dataset, fixed samples. Simplest entry point.
 
-Level 2 - Orchestrator Agent (agent_benchmark.py)
+Level 2 — Orchestrator Agent (agent_benchmark.py)
   Claude receives a natural language instruction and autonomously
-  decides which models/subjects/samples to run, interprets results,
-  and calls the benchmark tools.
+  decides which models/subjects/samples to run, then generates a report.
 
-Level 3 - Extensible Agent Evaluation Framework (eval_agents.py + labai/)
-  Evaluates tool-calling agents on domain-specific datasets (finance, MMLU).
-  Fully extensible: add new datasets, tools, agents, or scorers by subclassing
-  an ABC and applying a @Registry decorator - no other files need to change.
+Level 3 — Extensible Agent Evaluation Framework (eval_agents.py + labai/)
+  Evaluates tool-calling agents on domain-specific datasets.
+  Plugin-based: add datasets, tools, agents, or scorers with a decorator.
 ```
 
-### labai/ package structure
+### labai/ package
 
 ```
 labai/
   core/
-    types.py       # EvalItem, AgentResult, EvalScore, RunResult — shared types
-    base.py        # BaseDataset, BaseTool, BaseAgent, BaseScorer — ABCs
-    registry.py    # @Registry.dataset / .tool / .agent / .scorer decorators
-    runner.py      # AgentEvalRunner — orchestrates eval loop + Braintrust logging
+    types.py       # EvalItem, AgentResult, EvalScore, RunResult
+    base.py        # BaseDataset, BaseTool, BaseAgent, BaseScorer (ABCs)
+    registry.py    # @Registry.dataset / .tool / .agent / .scorer
+    runner.py      # AgentEvalRunner — eval loop + Braintrust logging
   datasets/
-    finance.py     # FinanceDataset — 20 curated Q&A questions requiring tool use
-    mmlu.py        # MMLUDataset — wraps HuggingFace MMLU for agent evaluation
+    finance.py     # FinanceDataset — live Q&A generated from Yahoo Finance
+    mmlu.py        # MMLUDataset — HuggingFace MMLU wrapper
   tools/
-    finance.py     # StockPriceTool, FinancialRatiosTool, CalculateReturnTool,
-                   # CompareCompaniesTool (mock data, swap for real APIs)
+    finance.py     # get_stock_price, get_financial_ratios, calculate_return,
+                   # compare_companies — all backed by live Yahoo Finance data
   agents/
-    llm_agent.py   # LLMAgent — tool-calling LLM agent via litellm
+    llm_agent.py   # LLMAgent — iterative tool-calling agent via litellm
+                   # Retry on transient errors + XML tool-call fallback
   scorers/
-    llm_judge.py   # LLMJudgeScorer — answer + reasoning + efficiency scores
+    llm_judge.py   # LLMJudgeScorer — answer + reasoning + efficiency
   reports/
-    pdf.py         # PDF report generator for agent eval runs
+    html.py        # Interactive dark-mode HTML report (multi-model tabs)
+    pdf.py         # Clean white PDF report
 ```
 
 ---
@@ -58,192 +60,172 @@ pip install -r requirements.txt
 ```
 
 Copy `.env.example` to `.env` and fill in your keys:
-```
-BRAINTRUST_API_KEY=your_key_here   # https://www.braintrust.dev/app/settings?tab=api-keys
+
+```env
+BRAINTRUST_API_KEY=your_key_here
 OPENAI_API_KEY=sk-proj-...
 OPENROUTER_API_KEY=sk-or-v1-...
+ANTHROPIC_API_KEY=sk-ant-...   # optional, needed for direct Anthropic calls
 ```
 
 ---
 
-## Level 2 - Orchestrator Agent
+## Level 1 — MMLU Benchmark
 
-Claude acts as an orchestrator: receives a natural language instruction and autonomously runs benchmarks, interprets results, and generates the report.
+Fixed script for deterministic runs. The simplest entry point.
+
+### How it works
+
+1. Questions loaded from MMLU, sent to each model with a reasoning prompt
+2. Model explains reasoning and gives a final answer (`ANSWER: X`)
+3. LLM judge (default `gpt-4o-mini`) scores 0.0–1.0 on correctness + reasoning quality
+4. Results logged to Braintrust; PDF saved to `reports/mmlu_HH-MM_YY-MM-DD.pdf`
 
 ### Quick start
+
 ```bash
-# Default instruction: benchmark 4 models, 50 questions each, generate report
+# Default: gpt-4o-mini, claude-haiku, gemini-flash, qwq-32b — 100 questions each
+python mmlu_benchmark.py
+
+# Choose models
+python mmlu_benchmark.py --models gpt-4o claude-sonnet deepseek-v3
+
+# Filter by subject
+python mmlu_benchmark.py --subjects math physics --samples 200
+
+# Stronger judge
+python mmlu_benchmark.py --judge openai/gpt-4o
+
+# List available options
+python mmlu_benchmark.py --list-models
+python mmlu_benchmark.py --list-subjects
+```
+
+Questions are sampled **evenly across all 57 subjects** so every subject is always represented.
+
+---
+
+## Level 2 — Orchestrator Agent
+
+Claude acts as an orchestrator: receives a natural language instruction, autonomously runs benchmarks, interprets results, and generates a report.
+
+### Quick start
+
+```bash
+# Default instruction: benchmark 4 models, 50 questions each
 python agent_benchmark.py
 
 # Custom instruction
-python agent_benchmark.py --instruction "Compare gpt-4o and deepseek-v3 on math and physics, 100 questions each. Identify the weakest subject for each model."
+python agent_benchmark.py --instruction "Compare gpt-4o and deepseek-v3 on math and physics, 100 questions each."
 
 # Change orchestrator model
 python agent_benchmark.py --orchestrator claude-opus
 python agent_benchmark.py --orchestrator gpt-4o
 ```
 
-### Available orchestrators
-| Key | Model |
-|-----|-------|
-| `claude-haiku` | claude-3.5-haiku (fast, cheap) |
-| `claude-sonnet` | claude-sonnet-4-5 (default, balanced) |
-| `claude-opus` | claude-opus-4-5 (most capable) |
-| `gpt-4o-mini` | gpt-4o-mini (cheap) |
-| `gpt-4o` | gpt-4o |
+### Orchestrator tools
 
-### What the agent can do (tools)
 | Tool | Description |
 |------|-------------|
-| `run_benchmark` | Run MMLU eval on a model (model, subjects, samples) |
+| `run_benchmark` | Run MMLU eval on a model |
 | `get_results` | Get all results so far, ranked by judge score |
 | `get_subject_breakdown` | Top 5 / bottom 5 subjects for a model |
 | `generate_report` | Save PDF report with all results |
-| `list_available_models` | Show all 16 available models |
+| `list_available_models` | Show all available models |
 | `list_available_subjects` | Show all 57 MMLU subjects |
 
 ---
 
-## Level 1 - Direct Benchmark Script
+## Level 3 — Agent Evaluation Framework
 
-Fixed script for deterministic runs. The simplest entry point. Also called internally by the Level 2 agent.
-
-### How it works
-
-1. Questions are loaded from MMLU and sent to each model
-2. Each model is asked to **explain its reasoning** and then give its final answer (`ANSWER: X`)
-3. An **LLM judge** (default: `gpt-4o-mini`) scores each response from 0.0 to 1.0:
-   - `1.0` — correct answer + clear, accurate reasoning
-   - `0.7` — correct answer + weak or missing reasoning
-   - `0.4` — wrong answer but shows partial understanding
-   - `0.0` — wrong answer with no relevant reasoning
-4. Results are logged to Braintrust (judge score, accuracy, tokens per call)
-5. A **PDF report** is saved to `reports/mmlu_<run_id>.pdf`
-
----
-
-## Running benchmarks via CLI
+Evaluates tool-calling agents on the live finance dataset using an LLM-as-judge.
 
 ### Quick start
+
 ```bash
-# Default: gpt-4o-mini, claude-haiku, gemini-flash, qwen-2.5-72b — 100 questions each
-python mmlu_benchmark.py
+# Default: evaluate gpt-4o-mini and claude-haiku on finance questions
+python eval_agents.py
+
+# Evaluate multiple models
+python eval_agents.py --models gpt-4o claude-haiku deepseek-v3
+
+# Filter by category
+python eval_agents.py --models gpt-4o --categories valuation returns --samples 10
+
+# Use MMLU dataset instead
+python eval_agents.py --dataset mmlu --samples 50
+
+# Skip Braintrust logging
+python eval_agents.py --no-braintrust
+
+# List all registered components
+python eval_agents.py --list
 ```
 
-### Choose models
-```bash
-python mmlu_benchmark.py --models gpt-4o claude-sonnet deepseek-v3
-```
+### Finance dataset
 
-### Change the judge model
-```bash
-# Use a stronger judge for more accurate scoring
-python mmlu_benchmark.py --judge openai/gpt-4o
+Questions and expected answers are **generated at load time from live Yahoo Finance data** (via `yfinance`). This ensures expected answers always match what the agent tools will return.
 
-# Use a cheaper judge for speed
-python mmlu_benchmark.py --judge openai/gpt-4o-mini
-```
+Tickers: `AAPL`, `MSFT`, `GOOGL`, `AMZN`, `TSLA`, `NVDA`, `META`, `NFLX`, `JPM`, `BRK-B`
 
-### Change the number of questions
-```bash
-# 50 questions (~2 per subject, fast)
-python mmlu_benchmark.py --samples 50
+| Category | Difficulty | Example |
+|----------|------------|---------|
+| `stock_price` | easy | Current price and daily change for AAPL |
+| `valuation` | easy/medium | Trailing P/E for NVDA; compare AAPL vs AMZN P/E |
+| `returns` | medium/hard | Total and annualized return for 100 AAPL shares bought 1 year ago |
+| `fundamentals` | easy/medium | JPM dividend yield; META debt-to-equity |
+| `comparison` | medium/hard | ROE ranking: AAPL vs MSFT vs GOOGL |
+| `multi_step` | hard | Implied EPS from price + P/E; target price for 15% return |
 
-# 570 questions (10 per subject)
-python mmlu_benchmark.py --samples 570
+### Finance tools
 
-# All questions in MMLU (~14k)
-python mmlu_benchmark.py --samples 14042
-```
+All tools call **live Yahoo Finance data** — no mocked responses.
 
-> Questions are sampled **evenly across all 57 subjects** so every subject is always represented.
+| Tool | Description |
+|------|-------------|
+| `get_stock_price` | Live price + daily % change for any ticker |
+| `get_financial_ratios` | Trailing P/E, Forward P/E, P/B, ROE, D/E, dividend yield |
+| `calculate_return` | Total and annualized return given buy price, current price, shares |
+| `compare_companies` | Side-by-side price + ratios for 2–5 tickers |
 
-### Filter by subject
-```bash
-python mmlu_benchmark.py --subjects math
-python mmlu_benchmark.py --subjects math physics computer
-python mmlu_benchmark.py --subjects math --samples 14042   # all math questions
-```
+### Scoring
 
-### Combine options
-```bash
-python mmlu_benchmark.py --models gpt-4o claude-sonnet --subjects math physics --samples 200 --judge openai/gpt-4o
-```
+| Score | Weight | Description |
+|-------|--------|-------------|
+| `answer_score` | 60% | Correctness of the final answer (LLM judge) |
+| `reasoning_score` | 30% | Quality of chain-of-thought (LLM judge) |
+| `efficiency_score` | 10% | Tool-use efficiency — fewer calls = better |
 
-### Explore available options
-```bash
-python mmlu_benchmark.py --list-models
-python mmlu_benchmark.py --list-subjects
-```
+### Reports
+
+Two reports generated after every run:
+
+- **HTML** (`reports/agent_benchmark_<model>_HH-MM_YY-MM-DD.html`) — interactive dark-mode, per-item detail, tools used, agent reasoning, costs
+- **PDF** (`reports/agent_benchmark_<model>_HH-MM_YY-MM-DD.pdf`) — clean white PDF with summary, per-item table, cost breakdown, and reasoning samples
+
+When multiple models are benchmarked, a **comparison HTML** is also generated (`reports/agent_benchmark_compare_HH-MM_YY-MM-DD.html`).
 
 ---
 
-## PDF Report
+## Braintrust logging
 
-After every run a PDF is saved to `reports/mmlu_<run_id>.pdf` with:
+Every item logged with:
 
-| Section | Content |
-|---------|---------|
-| **Page 1 — Leaderboard** | All models ranked by judge score, with accuracy and token usage |
-| **Per-model pages** | Judge score, accuracy, token totals, full subject breakdown table, top 5 / bottom 5 subjects |
-| **Last page** | Horizontal bar chart comparing judge scores across all models |
+| Field | Content |
+|-------|---------|
+| `input / output / expected` | Question, agent answer, reference answer |
+| `scores` | `answer`, `reasoning`, `efficiency`, `overall` |
+| `metadata` | Agent tokens (prompt + completion), agent cost USD, agent latency ms, tool calls (name + args + result), judge cost USD, judge latency ms, total cost USD |
+| `tags` | Category, difficulty, `ok` / `error` |
 
-Scores are color-coded: green ≥ 75%, yellow ≥ 50%, red < 50%.
-
----
-
-## What gets logged to Braintrust
-
-Each model run creates an experiment in the **MMLU Benchmark** project:
-
-- **judge** — LLM-as-judge score (0.0–1.0) per question
-- **accuracy** — binary correct/incorrect per question
-- **prompt_tokens / completion_tokens / tokens** — per LLM call
-- **subject** — MMLU subject (filterable in the UI)
-- **model / model_id / judge** — experiment metadata
-
-View and compare at [braintrust.dev/app](https://www.braintrust.dev/app).
+View and compare experiments at [braintrust.dev/app](https://www.braintrust.dev/app).
 
 ---
 
-## Modifying via code
+## Resilience features
 
-### Add a model
-Edit the `MODELS` dict at the top of `mmlu_benchmark.py`:
-
-```python
-MODELS: dict[str, str] = {
-    # ... existing models ...
-    "gemini-2-flash":  "openrouter/google/gemini-2.0-flash-001",
-    "llama-4-scout":   "openrouter/meta-llama/llama-4-scout",
-    "my-local-model":  "ollama/llama3",
-}
-```
-
-Browse all OpenRouter models at [openrouter.ai/models](https://openrouter.ai/models).
-
-### Change the default models
-```python
-DEFAULT_MODELS = ["gpt-4o", "claude-sonnet", "deepseek-v3"]
-```
-
-### Swap the dataset
-Replace the `load_dataset(...)` call inside `load_mmlu()` with any HuggingFace dataset.
-Adjust how `input`, `expected`, and `metadata` are extracted to match the new schema.
-
-```python
-# HellaSwag — commonsense reasoning
-ds = load_dataset("Rowan/hellaswag", split="validation")
-
-# TruthfulQA — factual accuracy
-ds = load_dataset("truthful_qa", "multiple_choice", split="validation")
-
-# HumanEval — coding
-ds = load_dataset("openai/openai_humaneval", split="test")
-```
-
-### Change the judge scoring criteria
-Edit the `JUDGE_PROMPT` string in `mmlu_benchmark.py` to adjust the rubric.
+- **Auto-retry on transient errors** — LLMAgent retries OpenRouter JSON/network errors up to 3 times with exponential backoff (1 s → 2 s → 4 s). Auth and quota errors fail immediately.
+- **XML tool-call fallback** — Some models (Claude via certain OpenRouter configurations) emit tool calls as Anthropic XML in the response content instead of the standard JSON `tool_calls` field. The agent detects and handles both formats automatically.
 
 ---
 
@@ -251,70 +233,30 @@ Edit the `JUDGE_PROMPT` string in `mmlu_benchmark.py` to adjust the rubric.
 
 | Key | Model | Provider |
 |-----|-------|----------|
-| `claude-haiku` | claude-3.5-haiku | OpenRouter — Anthropic |
-| `claude-sonnet` | claude-sonnet-4-5 | OpenRouter — Anthropic |
-| `claude-opus` | claude-opus-4-5 | OpenRouter — Anthropic |
+| `claude-haiku` | claude-3.5-haiku | Anthropic / OpenRouter |
+| `claude-sonnet` | claude-sonnet-4-5 | Anthropic / OpenRouter |
+| `claude-opus` | claude-opus-4-5 | Anthropic / OpenRouter |
 | `gpt-4o-mini` | gpt-4o-mini | OpenAI |
 | `gpt-4o` | gpt-4o | OpenAI |
-| `llama-3.1-8b` | llama-3.1-8b-instruct | OpenRouter — Meta |
-| `llama-3.1-70b` | llama-3.1-70b-instruct | OpenRouter — Meta |
-| `llama-3.3-70b` | llama-3.3-70b-instruct | OpenRouter — Meta |
-| `gemini-flash` | gemini-2.0-flash-001 | OpenRouter — Google |
-| `gemini-pro` | gemini-2.5-pro-preview | OpenRouter — Google |
-| `mistral-nemo` | mistral-nemo | OpenRouter — Mistral |
-| `mixtral-8x7b` | mixtral-8x7b-instruct | OpenRouter — Mistral |
-| `qwen-2.5-72b` | qwen-2.5-72b-instruct:nitro | OpenRouter — Alibaba |
-| `deepseek-r1` | deepseek-r1 | OpenRouter — DeepSeek |
-| `deepseek-v3` | deepseek-chat-v3-0324 | OpenRouter — DeepSeek |
-| `phi-4` | phi-4 | OpenRouter — Microsoft |
+| `gemini-flash` | gemini-2.0-flash-001 | Google / OpenRouter |
+| `gemini-pro` | gemini-2.5-pro-preview | Google / OpenRouter |
+| `llama-3.1-8b` | llama-3.1-8b-instruct | Meta / OpenRouter |
+| `llama-3.3-70b` | llama-3.3-70b-instruct | Meta / OpenRouter |
+| `deepseek-v3` | deepseek-chat-v3-0324 | DeepSeek / OpenRouter |
+| `deepseek-r1` | deepseek-r1 | DeepSeek / OpenRouter |
+| `qwq-32b` | qwq-32b | Qwen / OpenRouter |
+| `mistral-nemo` | mistral-nemo | Mistral / OpenRouter |
+| `phi-4` | phi-4 | Microsoft / OpenRouter |
 
-All 16 models verified working. Run `python test_models.py` to re-check availability.
+Run `python test_models.py` to verify availability.
 
 ---
 
-## Level 3 - Extensible Agent Evaluation Framework
+## Extend the framework
 
-Evaluates tool-calling agents on domain-specific datasets with an LLM-as-judge.
+The framework is fully plugin-based — add new components without touching existing files.
 
-### Quick start
-
-```bash
-# Default: evaluate gpt-4o-mini and claude-haiku on 20 finance questions
-python eval_agents.py
-
-# Evaluate multiple models
-python eval_agents.py --models gpt-4o-mini claude-haiku deepseek-v3
-
-# Filter by category and increase sample count
-python eval_agents.py --models gpt-4o --categories valuation returns --samples 10
-
-# Use MMLU dataset instead of finance
-python eval_agents.py --dataset mmlu --samples 50
-
-# Skip Braintrust logging (useful for testing)
-python eval_agents.py --no-braintrust
-
-# List all registered components and available models
-python eval_agents.py --list
-```
-
-### Scores
-
-Each response is scored on three dimensions:
-
-| Score | Weight | Description |
-|-------|--------|-------------|
-| `answer_score` | 60% | Correctness of the final answer (LLM judge, 0.0-1.0) |
-| `reasoning_score` | 30% | Quality of reasoning / chain-of-thought (LLM judge, 0.0-1.0) |
-| `efficiency_score` | 10% | Tool-use efficiency — fewer calls = better (automatic) |
-
-The weighted `overall` score is logged to Braintrust and shown in the PDF report.
-
-### Extend the framework
-
-The entire framework is plugin-based. Add a new component without touching existing files:
-
-#### Add a new dataset
+### New dataset
 
 ```python
 # labai/datasets/medical.py
@@ -324,26 +266,25 @@ from labai.core.types import EvalItem
 
 @Registry.dataset("medical_qa")
 class MedicalDataset(BaseDataset):
-    name     = "medical_qa"
-    domain   = "medical"
+    name = "medical_qa"
+    domain = "medical"
     language = "en"
 
     def load(self, subjects=None, n_samples=None) -> list[EvalItem]:
-        # Load your questions here
         ...
 ```
 
-#### Add a new tool
+### New tool
 
 ```python
 # labai/tools/medical.py
 from labai.core.base import BaseTool
 from labai.core.registry import Registry
 
-@Registry.tool("drug_interaction_check")
-class DrugInteractionTool(BaseTool):
-    name        = "drug_interaction_check"
-    description = "Check for known interactions between two drugs."
+@Registry.tool("drug_lookup")
+class DrugLookupTool(BaseTool):
+    name = "drug_lookup"
+    description = "Look up information about a drug by name."
 
     def get_schema(self) -> dict:
         return {
@@ -353,49 +294,46 @@ class DrugInteractionTool(BaseTool):
                 "description": self.description,
                 "parameters": {
                     "type": "object",
-                    "properties": {
-                        "drug_a": {"type": "string"},
-                        "drug_b": {"type": "string"},
-                    },
-                    "required": ["drug_a", "drug_b"],
+                    "properties": {"drug_name": {"type": "string"}},
+                    "required": ["drug_name"],
                 },
             },
         }
 
-    async def execute(self, drug_a: str, drug_b: str, **_) -> str:
-        # Call real API here
-        return f"No known interaction between {drug_a} and {drug_b}."
+    async def execute(self, drug_name: str, **_) -> str:
+        ...
 ```
 
-#### Add a new agent architecture
+### New agent
 
 ```python
 # labai/agents/rag_agent.py
 from labai.core.base import BaseAgent
 from labai.core.registry import Registry
+from labai.core.types import AgentResult
 
 @Registry.agent("rag_agent")
 class RAGAgent(BaseAgent):
-    name     = "rag-agent"
+    name = "rag-agent"
     model_id = "openai/gpt-4o"
 
     @property
     def tools(self): return []
 
-    async def run(self, task: str) -> AgentResult:
-        # Implement RAG pipeline here
+    async def run(self, task: str, **_) -> AgentResult:
         ...
 ```
 
-Just import your new module before calling `AgentEvalRunner` (or add the import to `eval_agents.py`) and the registry picks it up automatically.
+Import your new module in `eval_agents.py` and the registry picks it up automatically.
 
-### PDF Report (Level 3)
+---
 
-After every run a PDF is saved to `reports/agent_eval_<model>_<run_id>.pdf` with:
+## Key findings
 
-| Section | Content |
-|---------|---------|
-| **Page 1** | Run summary — agent, dataset, aggregate scores, token usage, error rate |
-| **Page 2** | Scores by category and difficulty |
-| **Page 3+** | Per-item detail table (id, answer, overall score, tool calls, error flag) |
-| **Last** | Horizontal bar chart comparing scores by category |
+- **DeepSeek-V3** — best quality/cost ratio for knowledge tasks (MMLU)
+- **Gemini Flash** — fastest and cheapest for high-volume runs
+- **Claude Sonnet/Opus** — best tool-use reasoning in agentic tasks
+- **Judge cost** (`gpt-4o-mini`) adds ~$0.0002–0.0005/item — relevant for large runs
+- **Agent latency** is dominated by tool call count, not model speed
+
+See [Findings.md](Findings.md) for the full write-up (Spanish + English).

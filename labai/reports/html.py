@@ -1,9 +1,11 @@
 """
-HTML report generator for Level 3 agent evaluation runs.
+HTML report generator for agent benchmark runs.
 
 Accepts one or multiple RunResult objects and produces a single self-contained HTML file:
   - Single model  → summary cards + CSS bar charts + per-item accordion
   - Multi model   → tabbed layout: one tab per model + "Compare" tab
+
+Filename format: agent_benchmark_<name>_YY-MM-DD_HH-MM.html
 """
 
 from __future__ import annotations
@@ -34,10 +36,16 @@ def _badge(score: float, label: str = "") -> str:
     t = f"{label} {score:.0%}".strip()
     return f'<span class="badge {c}">{_h(t)}</span>'
 
-# ── CSS bar chart (percentage-based, responsive) ───────────────────────────────
+def _fmt_cost(cost: float) -> str:
+    if cost <= 0:
+        return "$0.00"
+    if cost < 0.0001:
+        return f"< $0.0001"
+    return f"${cost:.4f}"
+
+# ── CSS bar chart ──────────────────────────────────────────────────────────────
 
 def _bar_chart(scores: dict[str, float], colors: list[str] | None = None) -> str:
-    """Render a compact CSS bar chart. scores = {label: 0-1}."""
     if not scores:
         return ""
     rows = []
@@ -57,10 +65,8 @@ def _bar_chart(scores: dict[str, float], colors: list[str] | None = None) -> str
 
 
 def _multi_bar_chart(scores_per_model: dict[str, dict[str, float]], model_colors: dict[str, str]) -> str:
-    """For each category, show one bar per model side by side."""
     if not scores_per_model:
         return ""
-    # Collect all categories
     all_cats: set[str] = set()
     for d in scores_per_model.values():
         all_cats.update(d.keys())
@@ -91,7 +97,7 @@ def _multi_bar_chart(scores_per_model: dict[str, dict[str, float]], model_colors
 
 def _tool_trace(record: EvalRecord) -> str:
     if not record.result.tool_calls:
-        return '<p class="muted-note">No tool calls made.</p>'
+        return '<p class="muted-note">No se usaron herramientas.</p>'
     items = []
     for i, tc in enumerate(record.result.tool_calls, 1):
         args_str = json.dumps(tc.arguments, indent=2)
@@ -104,11 +110,11 @@ def _tool_trace(record: EvalRecord) -> str:
         </div>
         <div class="tool-body">
           <div class="tool-col">
-            <div class="mini-label">Arguments</div>
+            <div class="mini-label">Argumentos</div>
             <pre class="code-args">{_h(args_str)}</pre>
           </div>
           <div class="tool-col">
-            <div class="mini-label">Result</div>
+            <div class="mini-label">Resultado</div>
             <pre class="code-result">{_h(result)}</pre>
           </div>
         </div>
@@ -118,15 +124,29 @@ def _tool_trace(record: EvalRecord) -> str:
 
 # ── Per-item accordion ─────────────────────────────────────────────────────────
 
+def _tool_pill_row(record: EvalRecord) -> str:
+    """Compact inline list of tools used, shown in summary row."""
+    if not record.result.tool_calls:
+        return "<em class='muted-note'>ninguna</em>"
+    return " → ".join(f'<code>{_h(tc.name)}</code>' for tc in record.result.tool_calls)
+
+
 def _item_row(idx: int, rec: EvalRecord) -> str:
     item   = rec.item
     result = rec.result
     score  = rec.score
     q      = item.input.split("\n")[0][:85]
     n      = len(result.tool_calls)
-    chain  = " → ".join(f'<code>{_h(tc.name)}</code>' for tc in result.tool_calls) or "<em class='muted-note'>none</em>"
-    rationale = score.details.get("rationale", "")
-    err_badge = '<span class="badge red">ERR</span>' if result.error else ""
+    tool_pills = _tool_pill_row(rec)
+    rationale  = score.details.get("rationale", "")
+    err_badge  = '<span class="badge red">ERR</span>' if result.error else ""
+
+    # Token / cost breakdown
+    agent_cost = result.total_cost
+    judge_cost = score.details.get("judge_cost", 0.0)
+    total_cost = agent_cost + judge_cost
+
+    judge_tokens = score.details.get("judge_total_tok", 0)
 
     return f"""
 <details class="item" id="i{idx}">
@@ -134,36 +154,46 @@ def _item_row(idx: int, rec: EvalRecord) -> str:
     <span class="item-num">{idx+1}</span>
     <span class="item-id">{_h(item.id)}</span>
     <span class="item-q">{_h(q)}</span>
-    <span class="item-chain">{chain}</span>
+    <span class="item-chain">{tool_pills}</span>
     <span class="item-badges">{_badge(score.overall,"overall")} {_badge(score.answer_score,"ans")} {err_badge}</span>
   </summary>
   <div class="item-body">
+
     <div class="item-grid">
       <div class="item-section">
-        <div class="section-label">Question</div>
+        <div class="section-label">Pregunta</div>
         <pre class="pre-q">{_h(item.input)}</pre>
       </div>
       <div class="item-section">
-        <div class="section-label">Expected answer</div>
+        <div class="section-label">Respuesta esperada</div>
         <pre class="pre-expected">{_h(item.expected)}</pre>
       </div>
     </div>
-    {"<div class='item-section'><div class='section-label'>Tool call trace (" + str(n) + " call" + ("s" if n!=1 else "") + ")</div>" + _tool_trace(rec) + "</div>" if n > 0 else ""}
+
+    {"<div class='item-section'><div class='section-label'>Herramientas usadas (" + str(n) + " llamada" + ("s" if n!=1 else "") + ")</div>" + _tool_trace(rec) + "</div>" if n > 0 else "<div class='item-section'><div class='section-label'>Herramientas</div><p class='muted-note'>El agente no utilizó herramientas.</p></div>"}
+
     <div class="item-section">
-      <div class="section-label">Agent answer</div>
-      <pre class="pre-answer">{_h(result.output or "(empty)")}</pre>
+      <div class="section-label">Razonamiento y respuesta del agente</div>
+      <pre class="pre-answer">{_h(result.output or "(vacío)")}</pre>
     </div>
+
     <div class="item-section item-scores-row">
-      <div class="score-pill">Answer <strong>{score.answer_score:.0%}</strong> <span class="weight">×60%</span></div>
-      <div class="score-pill">Reasoning <strong>{score.reasoning_score:.0%}</strong> <span class="weight">×30%</span></div>
-      <div class="score-pill">Efficiency <strong>{score.efficiency_score:.0%}</strong> <span class="weight">×10%</span></div>
-      <div class="score-pill overall-pill">Overall <strong>{score.overall:.0%}</strong></div>
+      <div class="score-pill">Respuesta <strong>{score.answer_score:.0%}</strong> <span class="weight">×60%</span></div>
+      <div class="score-pill">Razonamiento <strong>{score.reasoning_score:.0%}</strong> <span class="weight">×30%</span></div>
+      <div class="score-pill">Eficiencia <strong>{score.efficiency_score:.0%}</strong> <span class="weight">×10%</span></div>
+      <div class="score-pill overall-pill">Total <strong>{score.overall:.0%}</strong></div>
       {"<div class='rationale'>" + _h(rationale) + "</div>" if rationale else ""}
     </div>
+
     {"<div class='item-section err-block'><div class='section-label'>Error</div><pre>" + _h(result.error) + "</pre></div>" if result.error else ""}
+
     <div class="item-meta">
       {"".join(f'<span class="mtag">{_h(k)}: {_h(str(v))}</span>' for k,v in item.metadata.items())}
-      <span class="mtag">tokens: {result.total_tokens:,}</span>
+      <span class="mtag">tokens agente: {result.total_tokens:,}</span>
+      <span class="mtag">tokens juez: {judge_tokens:,}</span>
+      <span class="mtag">costo agente: {_fmt_cost(agent_cost)}</span>
+      <span class="mtag">costo juez: {_fmt_cost(judge_cost)}</span>
+      <span class="mtag">costo total: {_fmt_cost(total_cost)}</span>
       <span class="mtag">{result.latency_ms:.0f} ms</span>
     </div>
   </div>
@@ -178,38 +208,49 @@ def _model_tab_body(run: RunResult, tab_id: str) -> str:
 
     charts = ""
     if cat and len(cat) > 1:
-        charts += f'<div class="chart-block"><div class="chart-title">By category</div>{_bar_chart(cat)}</div>'
+        charts += f'<div class="chart-block"><div class="chart-title">Por categoría</div>{_bar_chart(cat)}</div>'
     if diff and len(diff) > 1:
-        charts += f'<div class="chart-block"><div class="chart-title">By difficulty</div>{_bar_chart(diff)}</div>'
+        charts += f'<div class="chart-block"><div class="chart-title">Por dificultad</div>{_bar_chart(diff)}</div>'
 
     items_html = "\n".join(
         f'<div data-score="{rec.score.overall:.4f}">{_item_row(i, rec)}</div>'
         for i, rec in enumerate(run.records)
     )
 
+    # Unique tool names used across the run
+    all_tools = sorted({tc.name for rec in run.records for tc in rec.result.tool_calls})
+    tools_badge = " ".join(f'<code class="tool-tag">{_h(t)}</code>' for t in all_tools) or "<em class='muted-note'>ninguna</em>"
+
     return f"""
 <div class="tab-pane" id="{tab_id}">
   <div class="cards">
-    {_card("Overall",    run.avg_overall,    "60/30/10 weighted")}
-    {_card("Answer",     run.avg_answer,     "correctness")}
-    {_card("Reasoning",  run.avg_reasoning,  "chain-of-thought")}
-    {_card("Efficiency", run.avg_efficiency, "tool use")}
-    {_card_plain("Items",       str(len(run.records)),     "evaluated")}
-    {_card_plain("Tokens",      f"{run.total_tokens:,}",   "total")}
-    {_card_plain("Avg tools",   f"{run.avg_tool_calls:.1f}", "per item")}
-    {_card_err("Error rate",    run.error_rate)}
+    {_card("Overall",    run.avg_overall,    "60/30/10 ponderado")}
+    {_card("Respuesta",  run.avg_answer,     "correctitud")}
+    {_card("Razonamiento", run.avg_reasoning, "chain-of-thought")}
+    {_card("Eficiencia", run.avg_efficiency, "uso de tools")}
+    {_card_plain("Items",       str(len(run.records)),       "evaluados")}
+    {_card_plain("Tokens",      f"{run.total_tokens:,}",     "agente total")}
+    {_card_plain("Avg tools",   f"{run.avg_tool_calls:.1f}", "por ítem")}
+    {_card_cost("Costo agente",  run.total_agent_cost)}
+    {_card_cost("Costo juez",    run.total_judge_cost)}
+    {_card_cost("Costo total",   run.total_cost)}
+    {_card_err("Errores",        run.error_rate)}
+  </div>
+
+  <div class="tools-used-row">
+    <span class="tools-used-label">Herramientas del run:</span> {tools_badge}
   </div>
 
   {"<div class='charts-row'>" + charts + "</div>" if charts else ""}
 
   <div class="items-header">
-    <div class="section-title">Results ({len(run.records)} items)</div>
+    <div class="section-title">Resultados ({len(run.records)} ítems)</div>
     <div class="filter-bar">
-      <input class="search" type="text" placeholder="Search…" oninput="filterItems(this,'{tab_id}')">
-      <button class="fbtn active" onclick="setFilter(this,'{tab_id}','all')">All</button>
-      <button class="fbtn" onclick="setFilter(this,'{tab_id}','good')">Good ≥75%</button>
-      <button class="fbtn" onclick="setFilter(this,'{tab_id}','mid')">Mid 50-75%</button>
-      <button class="fbtn" onclick="setFilter(this,'{tab_id}','low')">Low &lt;50%</button>
+      <input class="search" type="text" placeholder="Buscar…" oninput="filterItems(this,'{tab_id}')">
+      <button class="fbtn active" onclick="setFilter(this,'{tab_id}','all')">Todos</button>
+      <button class="fbtn" onclick="setFilter(this,'{tab_id}','good')">Bueno ≥75%</button>
+      <button class="fbtn" onclick="setFilter(this,'{tab_id}','mid')">Medio 50-75%</button>
+      <button class="fbtn" onclick="setFilter(this,'{tab_id}','low')">Bajo &lt;50%</button>
     </div>
   </div>
   <div class="items-list" id="list-{tab_id}">
@@ -233,12 +274,19 @@ def _card_plain(label: str, value: str, sub: str) -> str:
   <div class="card-sub">{_h(sub)}</div>
 </div>"""
 
+def _card_cost(label: str, cost: float) -> str:
+    return f"""<div class="card card-cost">
+  <div class="card-label">{_h(label)}</div>
+  <div class="card-value">{_fmt_cost(cost)}</div>
+  <div class="card-sub">USD</div>
+</div>"""
+
 def _card_err(label: str, rate: float) -> str:
     c = "red" if rate > 0 else "green"
     return f"""<div class="card card-{c}">
   <div class="card-label">{_h(label)}</div>
   <div class="card-value">{rate:.0%}</div>
-  <div class="card-sub">failed items</div>
+  <div class="card-sub">ítems fallidos</div>
 </div>"""
 
 
@@ -249,26 +297,35 @@ MODEL_PALETTE = ["#60a5fa", "#f472b6", "#34d399", "#fb923c", "#a78bfa", "#facc15
 def _compare_tab(runs: list[RunResult]) -> str:
     colors = {r.agent_name: MODEL_PALETTE[i % len(MODEL_PALETTE)] for i, r in enumerate(runs)}
 
-    # Summary table
     rows = []
     metrics = [
-        ("Overall",    lambda r: r.avg_overall),
-        ("Answer",     lambda r: r.avg_answer),
-        ("Reasoning",  lambda r: r.avg_reasoning),
-        ("Efficiency", lambda r: r.avg_efficiency),
-        ("Avg tools",  lambda r: r.avg_tool_calls),
-        ("Tokens",     lambda r: r.total_tokens),
-        ("Errors",     lambda r: r.error_rate),
+        ("Overall",       lambda r: r.avg_overall,      "pct"),
+        ("Respuesta",     lambda r: r.avg_answer,        "pct"),
+        ("Razonamiento",  lambda r: r.avg_reasoning,     "pct"),
+        ("Eficiencia",    lambda r: r.avg_efficiency,    "pct"),
+        ("Avg tools",     lambda r: r.avg_tool_calls,    "num"),
+        ("Tokens agente", lambda r: r.total_tokens,      "int"),
+        ("Costo agente",  lambda r: r.total_agent_cost,  "cost"),
+        ("Costo juez",    lambda r: r.total_judge_cost,  "cost"),
+        ("Costo total",   lambda r: r.total_cost,        "cost"),
+        ("Errores",       lambda r: r.error_rate,        "err"),
     ]
-    for label, fn in metrics:
+    for label, fn, kind in metrics:
         cells = ""
         for run in runs:
             v = fn(run)
-            if isinstance(v, float) and label not in ("Avg tools", "Tokens"):
-                badge = f'<span class="badge {_score_cls(v)}">{v:.1%}</span>' if label != "Errors" else f'<span class="badge {"red" if v>0 else "green"}">{v:.1%}</span>'
+            if kind == "pct":
+                badge = f'<span class="badge {_score_cls(v)}">{v:.1%}</span>'
                 cells += f"<td>{badge}</td>"
+            elif kind == "err":
+                badge = f'<span class="badge {"red" if v>0 else "green"}">{v:.1%}</span>'
+                cells += f"<td>{badge}</td>"
+            elif kind == "cost":
+                cells += f"<td class='num'>{_fmt_cost(v)}</td>"
+            elif kind == "int":
+                cells += f"<td class='num'>{int(v):,}</td>"
             else:
-                cells += f"<td class='num'>{v:,.1f}" + ("</td>" if isinstance(v, float) else f"{v:,}</td>")
+                cells += f"<td class='num'>{v:.1f}</td>"
         rows.append(f"<tr><td class='metric-name'>{_h(label)}</td>{cells}</tr>")
 
     headers = "".join(
@@ -276,7 +333,6 @@ def _compare_tab(runs: list[RunResult]) -> str:
         for r in runs
     )
 
-    # Per-category comparison
     all_cats: dict[str, dict[str, float]] = {r.agent_name: r.scores_by_category() for r in runs}
     cat_chart = ""
     all_cat_keys: set[str] = set()
@@ -285,11 +341,10 @@ def _compare_tab(runs: list[RunResult]) -> str:
     if len(all_cat_keys) > 1:
         cat_chart = f"""
     <div class="chart-block">
-      <div class="chart-title">Score by category</div>
+      <div class="chart-title">Score por categoría</div>
       {_multi_bar_chart(all_cats, colors)}
     </div>"""
 
-    # Legend
     legend = "".join(
         f'<span class="legend-dot" style="background:{colors[r.agent_name]}"></span><span class="legend-label">{_h(r.agent_name)}</span>'
         for r in runs
@@ -299,10 +354,10 @@ def _compare_tab(runs: list[RunResult]) -> str:
 <div class="tab-pane" id="tab-compare">
   <div class="legend">{legend}</div>
 
-  <div class="section-title" style="margin-top:0">Side-by-side metrics</div>
+  <div class="section-title" style="margin-top:0">Métricas comparativas</div>
   <div class="table-wrap">
     <table class="cmp-table">
-      <thead><tr><th>Metric</th>{headers}</tr></thead>
+      <thead><tr><th>Métrica</th>{headers}</tr></thead>
       <tbody>{"".join(rows)}</tbody>
     </table>
   </div>
@@ -318,7 +373,7 @@ _CSS = """
 html{font-size:14px}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0f172a;color:#cbd5e1;line-height:1.6}
 
-.wrap{max-width:1080px;margin:0 auto;padding:28px 20px 80px}
+.wrap{max-width:1120px;margin:0 auto;padding:28px 20px 80px}
 
 /* Header */
 .rpt-header{padding-bottom:18px;margin-bottom:28px;border-bottom:1px solid #1e293b}
@@ -336,15 +391,22 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;b
 .tab-pane{display:none}.tab-pane.active{display:block}
 
 /* Cards */
-.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;margin-bottom:24px}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;margin-bottom:16px}
 .card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:14px 16px}
 .card-label{font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;color:#64748b;margin-bottom:4px}
-.card-value{font-size:1.7rem;font-weight:700;line-height:1}
+.card-value{font-size:1.55rem;font-weight:700;line-height:1}
 .card-sub{font-size:.72rem;color:#475569;margin-top:3px}
 .card-green .card-value{color:#4ade80}
 .card-yellow .card-value{color:#facc15}
 .card-red .card-value{color:#f87171}
 .card-neutral .card-value{color:#93c5fd}
+.card-cost .card-value{color:#a78bfa;font-size:1.2rem}
+.card-cost{border-color:#3b1f6e}
+
+/* Tools used row */
+.tools-used-row{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:20px;padding:10px 14px;background:#1e293b;border:1px solid #334155;border-radius:8px}
+.tools-used-label{font-size:.75rem;text-transform:uppercase;letter-spacing:.05em;color:#64748b;white-space:nowrap}
+.tool-tag{background:#0c2444;color:#38bdf8;border:1px solid #1e3a5f;border-radius:4px;padding:2px 8px;font-size:.78rem}
 
 /* Bar charts */
 .charts-row{display:flex;gap:20px;flex-wrap:wrap;margin-bottom:24px}
@@ -406,7 +468,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;b
 pre{background:#0f172a;border:1px solid #1e293b;border-radius:5px;padding:10px 12px;font-size:.78rem;overflow-x:auto;white-space:pre-wrap;word-break:break-word;color:#cbd5e1;line-height:1.5;max-height:180px;overflow-y:auto}
 .pre-q{max-height:140px}
 .pre-expected{color:#86efac}
-.pre-answer{max-height:200px}
+.pre-answer{max-height:250px;color:#e2e8f0}
 
 /* Tool calls */
 .tool-call{border:1px solid #1e3a5f;border-radius:6px;overflow:hidden;margin-bottom:8px}
@@ -478,7 +540,6 @@ function setFilter(btn, tabId, filt) {
   const search = pane.querySelector('.search');
   filterItems(search, tabId);
 }
-// init
 document.addEventListener('DOMContentLoaded', () => {
   const first = document.querySelector('.tab-btn');
   if (first) showTab(first.dataset.tab);
@@ -492,51 +553,53 @@ def generate_agent_eval_html(
     output_dir: str = "reports",
 ) -> str:
     """
-    Generate a self-contained HTML report for one or more RunResult objects.
-
-    Single model  → flat report (no tabs).
-    Multiple models → tabbed: one tab per model + Compare tab.
-
+    Generate a self-contained HTML agent benchmark report.
+    Filename: agent_benchmark_<name>_YY-MM-DD_HH-MM.html
     Returns absolute path to the saved file.
     """
     if isinstance(runs, RunResult):
         runs = [runs]
 
     os.makedirs(output_dir, exist_ok=True)
+    ts = datetime.now().strftime("%H-%M_%y-%m-%d")
 
     if len(runs) == 1:
         run      = runs[0]
-        filename = f"agent_eval_{run.agent_name}_{run.run_id}.html"
-        title    = f"LabAI — {run.agent_name}"
+        filename = f"agent_benchmark_{run.agent_name}_{ts}.html"
+        title    = f"Agent Benchmark — {run.agent_name}"
         meta_items = [
-            ("Agent", run.agent_name), ("Dataset", run.dataset_name),
-            ("Run ID", run.run_id), ("Date", datetime.now().strftime("%Y-%m-%d %H:%M")),
+            ("Agente",   run.agent_name),
+            ("Dataset",  run.dataset_name),
+            ("Run ID",   run.run_id),
+            ("Fecha",    datetime.now().strftime("%Y-%m-%d %H:%M")),
+            ("Costo total", _fmt_cost(run.total_cost)),
         ]
         tabs_html  = ""
         panes_html = _model_tab_body(run, "tab-main").replace('id="tab-main"', 'id="tab-main" class="tab-pane active"')
         panes_html = panes_html.replace('class="tab-pane" id="tab-main"', 'class="tab-pane active" id="tab-main"')
     else:
-        names    = "+".join(r.agent_name for r in runs[:3]) + ("…" if len(runs)>3 else "")
-        run_ids  = "_".join(r.run_id for r in runs[:2])
-        filename = f"agent_eval_compare_{run_ids}.html"
-        title    = f"LabAI — Compare {names}"
+        names    = "+".join(r.agent_name for r in runs[:3]) + ("…" if len(runs) > 3 else "")
+        filename = f"agent_benchmark_compare_{ts}.html"
+        title    = f"Agent Benchmark — Comparación {names}"
+        total_cost_all = sum(r.total_cost for r in runs)
         meta_items = [
-            ("Models", ", ".join(r.agent_name for r in runs)),
-            ("Dataset", runs[0].dataset_name),
-            ("Date", datetime.now().strftime("%Y-%m-%d %H:%M")),
+            ("Modelos",     ", ".join(r.agent_name for r in runs)),
+            ("Dataset",     runs[0].dataset_name),
+            ("Fecha",       datetime.now().strftime("%Y-%m-%d %H:%M")),
+            ("Costo total", _fmt_cost(total_cost_all)),
         ]
 
         tab_btns = []
         panes    = []
         for i, run in enumerate(runs):
-            tid   = f"tab-{i}"
+            tid    = f"tab-{i}"
             active = "active" if i == 0 else ""
             tab_btns.append(f'<button class="tab-btn {active}" data-tab="{tid}" onclick="showTab(\'{tid}\')">{_h(run.agent_name)}</button>')
             body = _model_tab_body(run, tid)
             body = body.replace(f'class="tab-pane" id="{tid}"', f'class="tab-pane {active}" id="{tid}"')
             panes.append(body)
 
-        tab_btns.append('<button class="tab-btn" data-tab="tab-compare" onclick="showTab(\'tab-compare\')">⇄ Compare</button>')
+        tab_btns.append('<button class="tab-btn" data-tab="tab-compare" onclick="showTab(\'tab-compare\')">⇄ Comparar</button>')
         panes.append(_compare_tab(runs))
 
         tabs_html  = '<div class="tabs">' + "".join(tab_btns) + "</div>"
@@ -545,7 +608,7 @@ def generate_agent_eval_html(
     meta_html = "".join(f'<div class="rpt-meta"><strong>{_h(k)}:</strong> {_h(v)}</div>' for k, v in meta_items)
 
     page = f"""<!DOCTYPE html>
-<html lang="en">
+<html lang="es">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -555,8 +618,8 @@ def generate_agent_eval_html(
 <body>
 <div class="wrap">
   <div class="rpt-header">
-    <h1>LabAI Agent Evaluation Report</h1>
-    <div class="sub">Universidad Austral | AI Department</div>
+    <h1>Agent Benchmark Report</h1>
+    <div class="sub">Universidad Austral | Departamento de IA</div>
     <div class="meta">{meta_html}</div>
   </div>
   {tabs_html}

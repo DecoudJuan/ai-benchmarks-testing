@@ -6,3 +6,4 @@ anthropic>=0.40.0
 litellm>=1.50.0
 python-dotenv>=1.0.0
 fpdf2>=2.7.0
+yfinance>=0.2.0

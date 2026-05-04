@@ -36,6 +36,8 @@ from __future__ import annotations
 
 import json
 import re
+import time
+from typing import Any
 
 import litellm
 
@@ -93,6 +95,13 @@ reasoning_score (0.0 - 1.0):
 }}"""
 
 
+def _safe_cost(response: Any) -> float:
+    try:
+        return litellm.completion_cost(completion_response=response) or 0.0
+    except Exception:
+        return 0.0
+
+
 # ── Scorer ─────────────────────────────────────────────────────────────────────
 
 @Registry.scorer("llm_judge")
@@ -122,7 +131,7 @@ class LLMJudgeScorer(BaseScorer):
         """
         Evaluate one agent result against the expected answer.
 
-        Returns EvalScore with answer, reasoning, and efficiency scores.
+        Returns EvalScore with answer, reasoning, efficiency scores, and judge cost.
         """
         # Build tool summary for the judge
         tool_lines = (
@@ -144,10 +153,13 @@ class LLMJudgeScorer(BaseScorer):
             tool_summary = tool_lines,
         )
 
-        # Call judge
-        answer_score   = 0.0
+        # Call judge and track cost + latency
+        answer_score    = 0.0
         reasoning_score = 0.0
         rationale       = ""
+        judge_cost      = 0.0
+        judge_tokens    = {"prompt": 0, "completion": 0, "total": 0}
+        t_judge         = time.monotonic()
 
         try:
             response = await litellm.acompletion(
@@ -158,8 +170,17 @@ class LLMJudgeScorer(BaseScorer):
             )
             raw = response.choices[0].message.content or ""
             answer_score, reasoning_score, rationale = _parse_judge_response(raw)
+            judge_cost = _safe_cost(response)
+            if response.usage:
+                judge_tokens = {
+                    "prompt":     getattr(response.usage, "prompt_tokens",     0) or 0,
+                    "completion": getattr(response.usage, "completion_tokens", 0) or 0,
+                    "total":      getattr(response.usage, "total_tokens",      0) or 0,
+                }
         except Exception as exc:
             rationale = f"Judge error: {exc}"
+
+        judge_latency_ms = (time.monotonic() - t_judge) * 1_000
 
         # Efficiency score (deterministic, not from LLM)
         efficiency_score = _compute_efficiency(
@@ -173,10 +194,15 @@ class LLMJudgeScorer(BaseScorer):
             reasoning_score  = reasoning_score,
             efficiency_score = efficiency_score,
             details          = {
-                "rationale":   rationale,
-                "n_tool_calls": len(result.tool_calls),
-                "judge_model": self.judge_model,
-                "agent_error": result.error or None,
+                "rationale":          rationale,
+                "n_tool_calls":       len(result.tool_calls),
+                "judge_model":        self.judge_model,
+                "judge_cost":         judge_cost,
+                "judge_latency_ms":   round(judge_latency_ms, 1),
+                "judge_prompt_tok":   judge_tokens["prompt"],
+                "judge_completion_tok": judge_tokens["completion"],
+                "judge_total_tok":    judge_tokens["total"],
+                "agent_error":        result.error or None,
             },
         )
 
@@ -185,7 +211,6 @@ class LLMJudgeScorer(BaseScorer):
 
 def _parse_judge_response(raw: str) -> tuple[float, float, str]:
     """Extract scores from the judge JSON response. Returns (answer, reasoning, rationale)."""
-    # Strip markdown code fences if present
     cleaned = re.sub(r"```(?:json)?", "", raw).strip()
 
     try:
@@ -193,12 +218,10 @@ def _parse_judge_response(raw: str) -> tuple[float, float, str]:
         answer   = float(data.get("answer_score",   0.0))
         reasoning = float(data.get("reasoning_score", 0.0))
         rationale = str(data.get("rationale", ""))
-        # Clamp to [0, 1]
         answer    = max(0.0, min(1.0, answer))
         reasoning = max(0.0, min(1.0, reasoning))
         return answer, reasoning, rationale
     except (json.JSONDecodeError, TypeError, ValueError):
-        # Fallback: try regex
         a_match = re.search(r'"answer_score"\s*:\s*([\d.]+)', cleaned)
         r_match = re.search(r'"reasoning_score"\s*:\s*([\d.]+)', cleaned)
         answer   = float(a_match.group(1)) if a_match else 0.0

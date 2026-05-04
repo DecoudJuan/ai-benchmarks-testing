@@ -114,13 +114,12 @@ class AgentEvalRunner:
                     score     = record.score
                     n_tools   = len(record.result.tool_calls)
                     err_flag  = " \033[91m[ERR]\033[0m" if record.result.error else ""
-                    # Colour-code overall score
                     if score.overall >= 0.75:
-                        colour = "\033[92m"   # green
+                        colour = "\033[92m"
                     elif score.overall >= 0.50:
-                        colour = "\033[93m"   # yellow
+                        colour = "\033[93m"
                     else:
-                        colour = "\033[91m"   # red
+                        colour = "\033[91m"
                     reset = "\033[0m"
 
                     if verbose:
@@ -169,7 +168,6 @@ class AgentEvalRunner:
         try:
             result: AgentResult = await self.agent.run(item.input, item_label=item.id)
         except TypeError:
-            # Agent doesn't accept item_label — call without it
             result = await self.agent.run(item.input)
         except Exception as exc:
             result = AgentResult(output="", error=str(exc))
@@ -199,20 +197,60 @@ class AgentEvalRunner:
         latency_ms: float,
     ) -> None:
         try:
+            # Build tool call metadata
+            tool_calls_meta = [
+                {
+                    "name":      tc.name,
+                    "arguments": tc.arguments,
+                    "result":    tc.result[:500],
+                }
+                for tc in result.tool_calls
+            ]
+
             experiment.log(
                 input    = item.input,
                 output   = result.output,
                 expected = item.expected,
-                scores   = score.to_dict(),
-                metadata = {
-                    **item.metadata,
-                    "tool_calls":        len(result.tool_calls),
-                    "prompt_tokens":     result.prompt_tokens,
-                    "completion_tokens": result.completion_tokens,
-                    "total_tokens":      result.total_tokens,
-                    "latency_ms":        round(latency_ms, 1),
-                    "error":             result.error or None,
+                scores   = {
+                    **score.to_dict(),
+                    # Surface individual judge sub-scores at top level for Braintrust charts
+                    "answer":     score.answer_score,
+                    "reasoning":  score.reasoning_score,
+                    "efficiency": score.efficiency_score,
                 },
+                metadata = {
+                    # Item metadata
+                    **item.metadata,
+                    # Agent metrics
+                    "agent_prompt_tokens":     result.prompt_tokens,
+                    "agent_completion_tokens": result.completion_tokens,
+                    "agent_total_tokens":      result.total_tokens,
+                    "agent_cost_usd":          round(result.total_cost, 6),
+                    "agent_latency_ms":        round(latency_ms, 1),
+                    "agent_tool_calls":        len(result.tool_calls),
+                    "tool_calls":              tool_calls_meta,
+                    "agent_error":             result.error or None,
+                    # Judge metrics
+                    "judge_model":             score.details.get("judge_model", ""),
+                    "judge_answer_score":      score.answer_score,
+                    "judge_reasoning_score":   score.reasoning_score,
+                    "judge_efficiency_score":  score.efficiency_score,
+                    "judge_overall_score":     score.overall,
+                    "judge_rationale":         score.details.get("rationale", ""),
+                    "judge_cost_usd":          round(score.details.get("judge_cost", 0.0), 6),
+                    "judge_latency_ms":        score.details.get("judge_latency_ms", 0.0),
+                    "judge_prompt_tokens":     score.details.get("judge_prompt_tok", 0),
+                    "judge_completion_tokens": score.details.get("judge_completion_tok", 0),
+                    "judge_total_tokens":      score.details.get("judge_total_tok", 0),
+                    # Totals
+                    "total_cost_usd":          round(result.total_cost + score.details.get("judge_cost", 0.0), 6),
+                    "total_tokens":            result.total_tokens + score.details.get("judge_total_tok", 0),
+                },
+                tags = [
+                    item.metadata.get("category", ""),
+                    item.metadata.get("difficulty", ""),
+                    "error" if result.error else "ok",
+                ],
             )
         except Exception:
             pass  # Never let logging break the eval

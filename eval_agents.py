@@ -68,15 +68,16 @@ MODELS: dict[str, str] = {
     "gemini-pro":     "openrouter/google/gemini-2.5-pro-preview-03-25",
     "mistral-nemo":   "openrouter/mistralai/mistral-nemo",
     "mixtral-8x7b":   "openrouter/mistralai/mixtral-8x7b-instruct",
-    "qwen-2.5-72b":   "openrouter/qwen/qwen-2.5-72b-instruct:nitro",
+    "qwen-2.5-72b":   "openrouter/qwen/qwen-2.5-72b-instruct",  # puede fallar si Novita no lo soporta
+    "qwq-32b":        "openrouter/qwen/qwq-32b",               # alternativa estable
     "deepseek-r1":    "openrouter/deepseek/deepseek-r1",
     "deepseek-v3":    "openrouter/deepseek/deepseek-chat-v3-0324",
     "phi-4":          "openrouter/microsoft/phi-4",
 }
 
-DEFAULT_MODELS   = ["gpt-4o-mini", "claude-haiku"]
+DEFAULT_MODELS   = ["gpt-4o-mini", "claude-haiku", "gemini-pro"]
 DEFAULT_DATASET  = "finance_qa"
-DEFAULT_SAMPLES  = 20
+DEFAULT_SAMPLES  = 30
 DEFAULT_JUDGE    = "openai/gpt-4o-mini"
 
 # Finance tools available to agents

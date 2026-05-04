@@ -51,13 +51,14 @@ MODELS: dict[str, str] = {
     "gemini-pro":     "openrouter/google/gemini-2.5-pro-preview-03-25",
     "mistral-nemo":   "openrouter/mistralai/mistral-nemo",
     "mixtral-8x7b":   "openrouter/mistralai/mixtral-8x7b-instruct",
-    "qwen-2.5-72b":   "openrouter/qwen/qwen-2.5-72b-instruct:nitro",
+    "qwen-2.5-72b":   "openrouter/qwen/qwen-2.5-72b-instruct",  # puede fallar en Novita
+    "qwq-32b":        "openrouter/qwen/qwq-32b",
     "deepseek-r1":    "openrouter/deepseek/deepseek-r1",
     "deepseek-v3":    "openrouter/deepseek/deepseek-chat-v3-0324",
     "phi-4":          "openrouter/microsoft/phi-4",
 }
 
-DEFAULT_MODELS = ["deepseek-v3", "claude-sonnet", "gemini-flash", "qwen-2.5-72b", "llama-3.1-8b"]
+DEFAULT_MODELS = ["deepseek-v3", "claude-sonnet", "gemini-flash", "qwq-32b", "llama-3.1-8b"]
 DEFAULT_JUDGE  = "openai/gpt-4o-mini"
 
 MMLU_SUBJECTS = [
@@ -91,9 +92,15 @@ class ModelResult:
     judge_scores:    list[float] = field(default_factory=list)
     accuracy_scores: list[float] = field(default_factory=list)
     subjects:        list[str]   = field(default_factory=list)
-    prompt_tokens:     int = 0
-    completion_tokens: int = 0
-    total_tokens:      int = 0
+    prompt_tokens:     int   = 0
+    completion_tokens: int   = 0
+    total_tokens:      int   = 0
+    agent_cost:        float = 0.0
+    judge_cost:        float = 0.0
+
+    @property
+    def total_cost(self) -> float:
+        return self.agent_cost + self.judge_cost
 
     @property
     def avg_judge(self) -> float:
@@ -194,7 +201,15 @@ Score the response from 0.0 to 1.0 using these criteria:
 Reply with ONLY a decimal number between 0.0 and 1.0."""
 
 
-async def call_judge(question_block: str, output: str, expected: str, judge_model: str) -> float:
+def _safe_cost(response) -> float:
+    try:
+        return litellm.completion_cost(completion_response=response) or 0.0
+    except Exception:
+        return 0.0
+
+
+async def call_judge(question_block: str, output: str, expected: str, judge_model: str) -> tuple[float, float]:
+    """Returns (score, cost_usd)."""
     prompt = JUDGE_PROMPT.format(
         question_block=question_block,
         expected=expected,
@@ -209,9 +224,10 @@ async def call_judge(question_block: str, output: str, expected: str, judge_mode
         )
         text = (resp.choices[0].message.content or "0").strip()
         m = re.search(r'[\d.]+', text)
-        return max(0.0, min(1.0, float(m.group()))) if m else 0.0
+        score = max(0.0, min(1.0, float(m.group()))) if m else 0.0
+        return score, _safe_cost(resp)
     except Exception:
-        return 0.0
+        return 0.0, 0.0
 
 
 # ── Benchmark runner ────────────────────────────────────────────────────────────
@@ -230,6 +246,7 @@ async def run_model(
     async def task(input: str) -> str:
         messages = [{"role": "user", "content": input}]
         expected = input_to_expected.get(input, "")
+        subject  = input_to_subject.get(input, "unknown")
         try:
             with braintrust.current_span().start_span(name="llm_call", type="llm") as span:
                 resp = await litellm.acompletion(
@@ -243,21 +260,40 @@ async def run_model(
                 pt = (u.prompt_tokens or 0) if u else 0
                 ct = (u.completion_tokens or 0) if u else 0
                 tt = (u.total_tokens or pt + ct) if u else 0
+                call_cost = _safe_cost(resp)
 
                 result.prompt_tokens     += pt
                 result.completion_tokens += ct
                 result.total_tokens      += tt
+                result.agent_cost        += call_cost
 
                 span.log(
                     input=messages,
                     output=raw,
                     expected=expected,
-                    metadata={"model": model_id},
-                    metrics={"prompt_tokens": pt, "completion_tokens": ct, "tokens": tt},
+                    metadata={
+                        "model":    model_id,
+                        "subject":  subject,
+                    },
+                    metrics={
+                        "prompt_tokens":     pt,
+                        "completion_tokens": ct,
+                        "tokens":            tt,
+                        "cost_usd":          round(call_cost, 6),
+                    },
                 )
 
-            # Log expected on the parent eval span so Braintrust stores it
-            braintrust.current_span().log(expected=expected)
+            braintrust.current_span().log(
+                expected=expected,
+                metadata={
+                    "subject":      subject,
+                    "model_key":    model_key,
+                    "model_id":     model_id,
+                    "judge_model":  judge_model,
+                    "answer_given": extract_answer(raw),
+                    "answer_correct": extract_answer(raw) == expected,
+                },
+            )
             return raw
         except Exception as e:
             print(f"  [error] {model_key}: {e}")
@@ -267,10 +303,18 @@ async def run_model(
         return 1.0 if extract_answer(output) == expected else 0.0
 
     async def judge(input: str, output: str, expected: str) -> float:
-        score = await call_judge(input, output, expected, judge_model)
+        score, cost = await call_judge(input, output, expected, judge_model)
         result.judge_scores.append(score)
         result.accuracy_scores.append(accuracy(output, expected))
         result.subjects.append(input_to_subject.get(input, "unknown"))
+        result.judge_cost += cost
+        braintrust.current_span().log(
+            metadata={
+                "judge_score": score,
+                "judge_cost_usd": round(cost, 6),
+                "subject": input_to_subject.get(input, "unknown"),
+            },
+        )
         return score
 
     await Eval(
@@ -287,15 +331,15 @@ async def run_model(
 def print_summary(results: list[ModelResult]):
     ranked = sorted(results, key=lambda r: r.avg_judge, reverse=True)
 
-    print("\n" + "=" * 72)
+    print("\n" + "=" * 90)
     print("  RESULTS SUMMARY")
-    print("=" * 72)
-    print(f"  {'Model':<20} {'Judge':>8} {'Accuracy':>10} {'Prompt':>10} {'Completion':>12} {'Total':>10}")
-    print(f"  {'-'*20} {'-'*8} {'-'*10} {'-'*10} {'-'*12} {'-'*10}")
+    print("=" * 90)
+    print(f"  {'Model':<20} {'Judge':>8} {'Accuracy':>10} {'Tokens':>10} {'Agent $':>10} {'Judge $':>10} {'Total $':>10}")
+    print(f"  {'-'*20} {'-'*8} {'-'*10} {'-'*10} {'-'*10} {'-'*10} {'-'*10}")
     for r in ranked:
         print(
             f"  {r.model_key:<20} {r.avg_judge:>7.1%} {r.avg_accuracy:>10.1%}"
-            f" {r.prompt_tokens:>10,} {r.completion_tokens:>12,} {r.total_tokens:>10,}"
+            f" {r.total_tokens:>10,} {r.agent_cost:>10.4f} {r.judge_cost:>10.4f} {r.total_cost:>10.4f}"
         )
     print()
 
@@ -323,7 +367,8 @@ def generate_pdf(results: list[ModelResult], run_id: str, judge_model: str, n_sa
     from fpdf import FPDF
 
     os.makedirs("reports", exist_ok=True)
-    path = f"reports/mmlu_{run_id}.pdf"
+    ts   = datetime.now().strftime("%H-%M_%y-%m-%d")
+    path = f"reports/mmlu_{ts}.pdf"
     ranked = sorted(results, key=lambda r: r.avg_judge, reverse=True)
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
@@ -450,9 +495,9 @@ def generate_pdf(results: list[ModelResult], run_id: str, judge_model: str, n_sa
         metrics = [
             ("Judge Score",  f"{r.avg_judge:.1%}"),
             ("Accuracy",     f"{r.avg_accuracy:.1%}"),
-            ("Prompt Tok.",  f"{r.prompt_tokens:,}"),
-            ("Completion",   f"{r.completion_tokens:,}"),
-            ("Total Tok.",   f"{r.total_tokens:,}"),
+            ("Total Tokens", f"{r.total_tokens:,}"),
+            ("Agent Cost",   f"${r.agent_cost:.4f}"),
+            ("Judge Cost",   f"${r.judge_cost:.4f}"),
             ("Questions",    str(len(r.judge_scores))),
         ]
         box_w = 30

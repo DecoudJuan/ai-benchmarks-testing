@@ -37,6 +37,7 @@ class AgentResult:
     prompt_tokens:     int           = 0
     completion_tokens: int           = 0
     total_tokens:      int           = 0
+    total_cost:        float         = 0.0     # USD cost of all LLM calls in this result
     latency_ms:        float         = 0.0
     error:             str           = ""
 
@@ -119,6 +120,22 @@ class RunResult:
     @property
     def error_rate(self) -> float:
         return self._mean([1.0 if r.result.error else 0.0 for r in self.records])
+
+    @property
+    def total_agent_cost(self) -> float:
+        return sum(r.result.total_cost for r in self.records)
+
+    @property
+    def total_judge_cost(self) -> float:
+        return sum(r.score.details.get("judge_cost", 0.0) for r in self.records)
+
+    @property
+    def total_cost(self) -> float:
+        return self.total_agent_cost + self.total_judge_cost
+
+    @property
+    def avg_latency_ms(self) -> float:
+        return self._mean([r.result.latency_ms for r in self.records])
 
     def scores_by_category(self) -> dict[str, float]:
         """Average overall score grouped by metadata['category']."""
